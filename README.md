@@ -1,8 +1,43 @@
 # percolator-fabrknt
 
-Fabrknt's extensions for [Percolator](https://github.com/nicholasgasior/percolator) — custom matching programs, shared SDK, and frontend apps for Solana.
+Fabrknt's custom matching programs, off-chain services, and frontend apps for [Percolator](https://github.com/nicholasgasior/percolator) on Solana.
 
-Consolidated from three repos: `percolator-matchers`, `percolator-matcher-sdk`, and `percolator-apps`.
+## How it fits together
+
+Percolator is a modular on-chain matching engine. Anatoly's core repos provide the protocol and CLI. This repo provides Fabrknt's custom matchers that plug into that protocol.
+
+```
+┌─────────────────────────────────────────────────────────┐
+│  percolator-prog         (Anatoly)                      │
+│  Core on-chain protocol — order book, matching engine,  │
+│  settlement, and account layout                         │
+└────────────────────────┬────────────────────────────────┘
+                         │ CPI (cross-program invocation)
+┌────────────────────────▼────────────────────────────────┐
+│  percolator-fabrknt      (Fabrknt / this repo)          │
+│  Custom matchers that implement pricing strategies      │
+│  on top of the core protocol                            │
+│                                                         │
+│  programs/  ── on-chain matching programs (Rust)        │
+│  sdk/       ── shared CPI library used by all matchers  │
+│  app/       ── off-chain keepers & solvers (TypeScript)  │
+│  apps/      ── frontend dashboards (Next.js)            │
+│  cli/       ── CLI tools per matcher                    │
+└─────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────┐
+│  percolator-cli          (Anatoly)                      │
+│  CLI for the core protocol — market setup, inspection,  │
+│  and admin operations                                   │
+└─────────────────────────────────────────────────────────┘
+```
+
+**percolator-prog** defines the on-chain accounts and instructions that all matchers must conform to. Each matcher in `programs/` uses CPI via the shared `sdk/` (matcher-common) to interact with the core protocol. The off-chain `app/` services (keepers, solvers, oracles) watch the chain and submit transactions using the matcher programs. The `apps/` frontends provide dashboards for monitoring and management.
+
+## Prerequisites
+
+- **[percolator-prog](https://github.com/nicholasgasior/percolator)** must be deployed on-chain. The matcher programs invoke it via CPI.
+- **[percolator-cli](https://github.com/nicholasgasior/percolator-cli)** is useful for setting up markets and inspecting state on the core protocol side.
 
 ## Structure
 
@@ -36,7 +71,7 @@ percolator-fabrknt/
 
 ## Dependencies
 
-- **[@veil/crypto](https://github.com/psyto/veil)** — NaCl box encryption for the privacy solver (replaces raw tweetnacl)
+- **[@veil/crypto](https://github.com/psyto/veil)** — NaCl box encryption for the privacy solver
 - **[matcher-common](sdk/)** — Shared CPI contract and context account utilities for all matchers
 
 ## Building
