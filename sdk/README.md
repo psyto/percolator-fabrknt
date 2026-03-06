@@ -1,8 +1,8 @@
-# percolator-matcher-sdk
+# matcher-common
 
 Shared Rust library for [Percolator](https://github.com/aeyakovenko/percolator) custom matching programs on Solana.
 
-All Percolator matchers share a 320-byte context account layout and a common CPI contract. This crate (`matcher-common`) provides the constants, verification functions, and header utilities that every matcher needs.
+All Percolator matchers share a 320-byte context account layout and a common CPI ABI. This crate provides the constants, verification functions, ABI types, and header utilities that every matcher needs.
 
 ## Installation
 
@@ -10,27 +10,67 @@ Add to your matcher's `Cargo.toml`:
 
 ```toml
 [dependencies]
-matcher-common = { path = "../../percolator-matcher-sdk" }
+matcher-common = { path = "../../sdk" }
 ```
 
-## Context Account Layout
+## CPI ABI
 
-Every Percolator matcher operates on a 320-byte context account with this fixed layout:
+Percolator-prog calls matchers via CPI. The matcher receives a 67-byte `MatcherCall` as instruction data and must write a 64-byte `MatcherReturn` at offset 0 of the context account.
+
+### MatcherCall (67 bytes, sent by percolator-prog)
+
+```
+Offset | Size | Field
+-------|------|------------------
+0      | 1    | tag (must be 0x00)
+1      | 8    | req_id
+9      | 2    | lp_idx
+11     | 8    | lp_account_id
+19     | 8    | oracle_price_e6
+27     | 16   | req_size (i128)
+43     | 24   | reserved (must be zero)
+```
+
+### MatcherReturn (64 bytes, written to context account offset 0)
+
+```
+Offset | Size | Field
+-------|------|------------------
+0      | 4    | abi_version (must be 1)
+4      | 4    | flags (FLAG_VALID=1, FLAG_PARTIAL_OK=2, FLAG_REJECTED=4)
+8      | 8    | exec_price_e6 (must be non-zero)
+16     | 16   | exec_size (i128)
+32     | 8    | req_id (echoed from call)
+40     | 8    | lp_account_id (echoed from call)
+48     | 8    | oracle_price_e6 (echoed from call)
+56     | 8    | reserved (must be 0)
+```
+
+### Return Types
+
+| Type | Flags | Meaning |
+|------|-------|---------|
+| Filled | `FLAG_VALID` | Trade accepted at `exec_price_e6` for `exec_size` |
+| Zero-fill | `FLAG_VALID \| FLAG_PARTIAL_OK` | No fill (exec_size=0), but not rejected |
+| Rejected | `FLAG_VALID \| FLAG_REJECTED` | Matcher refuses the trade |
+
+Matchers must **never return an error** for rejections. Instead, write `MatcherReturn::rejected()` and return `Ok(())`.
+
+## Context Account Layout (320 bytes)
+
+Every Percolator matcher operates on a 320-byte context account:
 
 ```
 Offset  | Size  | Field
 --------|-------|----------------------------------
-0-7     | 8     | Execution price (return data)
-8-63    | 56    | Reserved return data
+0-63    | 64    | MatcherReturn (written during CPI)
 64-71   | 8     | Magic bytes (matcher identity)
 72-75   | 4     | Version (= 1)
 76      | 1     | Mode (matcher-specific)
 77-79   | 3     | Padding
 80-111  | 32    | LP PDA (liquidity provider)
-112-319 | 208   | Reserved / matcher-specific data
+112-319 | 208   | Matcher-specific data
 ```
-
-The first 64 bytes (return data region) are where the matcher writes results back to Percolator during CPI calls. The magic bytes at offset 64 uniquely identify the matcher type and prevent cross-matcher attacks.
 
 ## Magic Values
 
@@ -42,19 +82,31 @@ Each matcher type has a unique 8-byte magic value:
 | Volatility | `VOLMATCH` | `0x564F_4c4d_4154_4348` |
 | JPY | `JPYMATCH` | `0x4A50_594D_4154_4348` |
 | Event | `EVNTMATC` | `0x4556_4e54_4d41_5443` |
-
-## CPI Contract
-
-Percolator relies on these guarantees when invoking matchers via CPI:
-
-1. Context account must be exactly `CTX_SIZE` (320) bytes
-2. Magic at offset 64 must match the expected matcher type
-3. LP PDA at offset 80 must match the signing account
-4. Execution price is written to offset 0 (first 8 bytes) during execution
-5. `write_header` produces a context that passes `verify_magic`
-6. Uninitialized accounts (zeroed magic) are always rejected
+| Macro | `MACOMATC` | `0x4d41_434f_4d41_5443` |
 
 ## API Reference
+
+### ABI Types
+
+```rust
+use matcher_common::{MatcherCall, MatcherReturn, FLAG_VALID, FLAG_PARTIAL_OK, FLAG_REJECTED};
+
+// Parse CPI instruction data from percolator-prog
+let call = MatcherCall::parse(instruction_data)?;
+// call.req_id, call.lp_idx, call.lp_account_id, call.oracle_price_e6, call.req_size
+
+// Write a filled return (trade accepted)
+let ret = MatcherReturn::filled(exec_price_e6, exec_size, &call);
+ret.write_to(&mut ctx_data)?;
+
+// Write a zero-fill return (no fill, not rejected)
+let ret = MatcherReturn::zero_fill(&call);
+ret.write_to(&mut ctx_data)?;
+
+// Write a rejected return (matcher refuses trade)
+let ret = MatcherReturn::rejected(&call);
+ret.write_to(&mut ctx_data)?;
+```
 
 ### Constants
 
@@ -73,117 +125,58 @@ LP_PDA_OFFSET: usize = 80        // Where LP PDA is stored
 ```rust
 use matcher_common::{read_magic, read_lp_pda, verify_magic};
 
-// Read the magic value from a context account
 let magic = read_magic(&ctx_data);
-
-// Read the LP PDA pubkey
 let lp_pda = read_lp_pda(&ctx_data);
-
-// Verify magic matches expected value (also checks buffer size >= 320)
 let is_valid = verify_magic(&ctx_data, PRIVMATC);
 ```
 
 ### Account Verification
 
-These are the critical security checks every matcher must perform.
-
 #### `verify_lp_pda`
 
-Verifies that the LP PDA account is a signer and matches the stored LP PDA in the context account. Call this on every execution instruction.
+Verifies that the LP PDA account is a signer and matches the stored LP PDA in the context account.
 
 ```rust
 use matcher_common::verify_lp_pda;
 
-// In your matcher's execute instruction:
-let lp_pda = &ctx.accounts.lp_pda;
-let ctx_account = &ctx.accounts.context;
-let magic = 0x5052_4956_4d41_5443u64; // PRIVMATC
-
 verify_lp_pda(lp_pda, ctx_account, magic, "PRIVACY-MATCHER")?;
-// Checks:
-//   1. lp_pda is a signer
-//   2. Context magic matches (account is initialized)
-//   3. LP PDA in context matches the signer
+// Checks: (1) signer, (2) magic matches, (3) LP PDA matches stored value
 ```
-
-**Errors:**
-- `MissingRequiredSignature` — LP PDA is not a signer
-- `UninitializedAccount` — magic mismatch or context not initialized
-- `InvalidAccountData` — LP PDA doesn't match stored value
 
 #### `verify_init_preconditions`
 
-Validates that a context account is ready for initialization. Prevents re-initialization attacks.
+Validates that a context account is ready for initialization. Prevents re-initialization.
 
 ```rust
 use matcher_common::verify_init_preconditions;
 
-// In your matcher's init instruction:
 verify_init_preconditions(ctx_account, magic, "PRIVACY-MATCHER")?;
-// Checks:
-//   1. Account is writable
-//   2. Account is at least CTX_SIZE (320) bytes
-//   3. Magic is NOT already set (prevents re-init)
+// Checks: (1) writable, (2) >= 320 bytes, (3) not already initialized
 ```
-
-**Errors:**
-- `InvalidAccountData` — account is not writable
-- `AccountDataTooSmall` — account is smaller than 320 bytes
-- `AccountAlreadyInitialized` — magic is already set
 
 ### Writing Context Data
 
 #### `write_header`
 
-Initializes all standard header fields in a context account. Call this in your Init instruction after `verify_init_preconditions`.
+Initializes standard header fields during Init.
 
 ```rust
 use matcher_common::write_header;
 
 let mut ctx_data = ctx_account.try_borrow_mut_data()?;
-write_header(
-    &mut ctx_data,
-    0x5052_4956_4d41_5443u64,  // magic: PRIVMATC
-    0,                          // mode: matcher-specific byte
-    &lp_pda.key(),              // LP PDA pubkey
-);
-// Writes: zeroed return data, magic, version=1, mode, padding, LP PDA
-```
-
-#### `write_exec_price`
-
-Writes the execution price to the return buffer (bytes 0-7). This is how your matcher communicates the computed price back to Percolator during CPI.
-
-```rust
-use matcher_common::write_exec_price;
-
-let mut ctx_data = ctx_account.try_borrow_mut_data()?;
-write_exec_price(&mut ctx_data, 100_500_000); // price in lamports or token units
+write_header(&mut ctx_data, MY_MAGIC, mode, &lp_pda.key());
 ```
 
 ### Price Computation
 
-#### `compute_exec_price`
-
-Applies a spread in basis points to a base price using checked arithmetic.
-
 ```rust
 use matcher_common::compute_exec_price;
 
-// Formula: price * (10_000 + spread_bps) / 10_000
-let price = compute_exec_price(100_000_000, 50)?;
-// 100_000_000 * 10_050 / 10_000 = 100_500_000
-
-let price_no_spread = compute_exec_price(100_000_000, 0)?;
-// 100_000_000 (unchanged)
+// price * (10_000 + spread_bps) / 10_000
+let price = compute_exec_price(100_000_000, 50)?; // -> 100_500_000
 ```
 
-**Errors:**
-- `ArithmeticOverflow` — if the multiplication overflows u128
-
 ## Writing a Custom Matcher
-
-Here's the typical structure for implementing a new Percolator matcher:
 
 ```rust
 use matcher_common::*;
@@ -193,47 +186,44 @@ use solana_program::{
     pubkey::Pubkey,
 };
 
-// Define your matcher's unique magic
 const MY_MAGIC: u64 = 0x4D59_4D41_5443_4845; // "MYMATCHE"
 
-// Init instruction: set up the context account
+// Init instruction
 pub fn process_init(accounts: &[AccountInfo], mode: u8) -> ProgramResult {
     let account_iter = &mut accounts.iter();
     let lp_pda = next_account_info(account_iter)?;
     let ctx_account = next_account_info(account_iter)?;
 
-    // Verify preconditions (writable, correct size, not already initialized)
     verify_init_preconditions(ctx_account, MY_MAGIC, "MY-MATCHER")?;
 
-    // Initialize the header
     let mut ctx_data = ctx_account.try_borrow_mut_data()?;
     write_header(&mut ctx_data, MY_MAGIC, mode, lp_pda.key);
-
-    // Write any matcher-specific data to bytes 112-319
-    // ctx_data[112..144].copy_from_slice(&my_custom_data);
-
     Ok(())
 }
 
-// Execute instruction: compute and write the price
-pub fn process_execute(
+// Match instruction (called by percolator-prog via CPI)
+pub fn process_match(
     accounts: &[AccountInfo],
-    oracle_price: u64,
-    spread_bps: u64,
+    instruction_data: &[u8],
 ) -> ProgramResult {
     let account_iter = &mut accounts.iter();
     let lp_pda = next_account_info(account_iter)?;
     let ctx_account = next_account_info(account_iter)?;
 
-    // Verify LP PDA (signer check + magic check + PDA match)
+    // 1. Verify LP PDA
     verify_lp_pda(lp_pda, ctx_account, MY_MAGIC, "MY-MATCHER")?;
 
-    // Compute execution price with spread
-    let exec_price = compute_exec_price(oracle_price, spread_bps)?;
+    // 2. Parse the CPI call from percolator-prog
+    let call = MatcherCall::parse(instruction_data)?;
 
-    // Write price to return buffer for Percolator to read
+    // 3. Compute execution price
+    let spread_bps = 50u64;
+    let exec_price = compute_exec_price(call.oracle_price_e6, spread_bps)?;
+
+    // 4. Write full MatcherReturn to context account
     let mut ctx_data = ctx_account.try_borrow_mut_data()?;
-    write_exec_price(&mut ctx_data, exec_price);
+    let ret = MatcherReturn::filled(exec_price, call.req_size, &call);
+    ret.write_to(&mut ctx_data)?;
 
     Ok(())
 }
@@ -244,12 +234,6 @@ pub fn process_execute(
 ```bash
 cargo test
 ```
-
-The crate includes 16 tests covering:
-- Magic byte verification and short buffer handling
-- Price computation with and without spread
-- Header write/read roundtrips
-- Full CPI contract verification (magic mismatch rejection, LP PDA mismatch detection, uninitialized/undersized account rejection, cross-matcher attack prevention)
 
 ## License
 
