@@ -1,47 +1,32 @@
-import nacl from "tweetnacl";
+import {
+  EncryptionKeypair,
+  EncryptedData,
+  generateEncryptionKeypair,
+  encrypt as veilEncrypt,
+  decrypt as veilDecrypt,
+} from "@veil/crypto";
 
 /**
  * NaCl box encryption/decryption for privacy intents
- * Adapted from Veil's confidential swap crypto
+ * Powered by @veil/crypto (Curve25519-XSalsa20-Poly1305)
  */
 
-export function generateKeyPair(): nacl.BoxKeyPair {
-  return nacl.box.keyPair();
-}
+export { EncryptionKeypair, EncryptedData, generateEncryptionKeypair };
 
 export function encrypt(
   message: Uint8Array,
   recipientPublicKey: Uint8Array,
-  senderSecretKey: Uint8Array
-): { encrypted: Uint8Array; nonce: Uint8Array; ephemeralPubkey: Uint8Array } {
-  const ephemeral = nacl.box.keyPair();
-  const nonce = nacl.randomBytes(nacl.box.nonceLength);
-  const encrypted = nacl.box(message, nonce, recipientPublicKey, ephemeral.secretKey);
-
-  if (!encrypted) {
-    throw new Error("Encryption failed");
-  }
-
-  return {
-    encrypted,
-    nonce,
-    ephemeralPubkey: ephemeral.publicKey,
-  };
+  senderKeypair: EncryptionKeypair
+): EncryptedData {
+  return veilEncrypt(message, recipientPublicKey, senderKeypair);
 }
 
 export function decrypt(
-  encrypted: Uint8Array,
-  nonce: Uint8Array,
+  encryptedBytes: Uint8Array,
   senderPublicKey: Uint8Array,
-  recipientSecretKey: Uint8Array
+  recipientKeypair: EncryptionKeypair
 ): Uint8Array {
-  const decrypted = nacl.box.open(encrypted, nonce, senderPublicKey, recipientSecretKey);
-
-  if (!decrypted) {
-    throw new Error("Decryption failed — invalid ciphertext or wrong keys");
-  }
-
-  return decrypted;
+  return veilDecrypt(encryptedBytes, senderPublicKey, recipientKeypair);
 }
 
 /**

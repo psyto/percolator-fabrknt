@@ -1,12 +1,13 @@
 import { Connection, Keypair, PublicKey, sendAndConfirmTransaction, Transaction, TransactionInstruction, SystemProgram } from "@solana/web3.js";
 import { SolverConfig, EncryptedIntent, DecryptedIntent } from "./config";
-import { decrypt, deserializeIntent } from "./encryption";
+import { decrypt, deserializeIntent, EncryptionKeypair, generateEncryptionKeypair } from "./encryption";
 import { withRetry } from "../../shared/retry";
 import * as fs from "fs";
 
 export class PrivacyPerpsSolver {
   private connection: Connection;
   private solverKeypair: Keypair;
+  private encryptionKeypair: EncryptionKeypair;
   private config: SolverConfig;
   private running: boolean = false;
   private intentQueue: EncryptedIntent[] = [];
@@ -16,6 +17,7 @@ export class PrivacyPerpsSolver {
     this.connection = new Connection(config.rpcUrl, "confirmed");
     const keyData = JSON.parse(fs.readFileSync(config.solverKeypairPath, "utf-8"));
     this.solverKeypair = Keypair.fromSecretKey(Uint8Array.from(keyData));
+    this.encryptionKeypair = generateEncryptionKeypair();
   }
 
   /**
@@ -83,11 +85,15 @@ export class PrivacyPerpsSolver {
    */
   private decryptIntent(intent: EncryptedIntent): DecryptedIntent | null {
     try {
+      // Combine nonce + ciphertext into the format @veil/crypto expects
+      const encryptedBytes = new Uint8Array(intent.nonce.length + intent.encryptedPayload.length);
+      encryptedBytes.set(intent.nonce, 0);
+      encryptedBytes.set(intent.encryptedPayload, intent.nonce.length);
+
       const decryptedBytes = decrypt(
-        intent.encryptedPayload,
-        intent.nonce,
+        encryptedBytes,
         intent.userEphemeralPubkey,
-        this.solverKeypair.secretKey.slice(0, 32) // X25519 secret key
+        this.encryptionKeypair,
       );
       const parsed = deserializeIntent(decryptedBytes);
       return {
