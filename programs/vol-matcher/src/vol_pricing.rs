@@ -3,7 +3,7 @@ use solana_program::{
     program_error::ProgramError, pubkey::Pubkey, sysvar::Sysvar,
 };
 
-use matcher_common::{verify_lp_pda as verify_lp_pda_common, verify_init_preconditions, write_header, write_exec_price, compute_exec_price};
+use matcher_common::{verify_lp_pda as verify_lp_pda_common, verify_init_preconditions, write_header, compute_exec_price, MatcherCall, MatcherReturn};
 
 use crate::errors::VolMatcherError;
 use crate::state::*;
@@ -84,14 +84,15 @@ pub fn process_init(
     Ok(())
 }
 
-/// Tag 0x00: Execute match — compute vol-adjusted execution price
+/// Tag 0x00: Execute match (CPI from percolator-prog)
 /// Accounts:
 ///   [0] LP PDA (signer)
 ///   [1] Matcher context account (writable)
+/// Data: 67-byte MatcherCall from percolator-prog
 pub fn process_match(
     _program_id: &Pubkey,
     accounts: &[AccountInfo],
-    _data: &[u8],
+    data: &[u8],
 ) -> ProgramResult {
     if accounts.len() < 2 {
         return Err(ProgramError::NotEnoughAccountKeys);
@@ -99,6 +100,9 @@ pub fn process_match(
 
     let lp_pda = &accounts[0];
     let ctx_account = &accounts[1];
+
+    // Parse the CPI call from percolator-prog
+    let call = MatcherCall::parse(data)?;
 
     // Verify LP PDA signature, magic, and PDA match
     verify_lp_pda_common(lp_pda, ctx_account, VOL_MATCHER_MAGIC, "VOL-MATCHER")?;
@@ -122,7 +126,11 @@ pub fn process_match(
     // Reject if vol mark price not set
     if vol_mark == 0 {
         msg!("VOL-MATCHER: Vol mark price not set — oracle sync required");
-        return Err(VolMatcherError::OracleNotSynced.into());
+        let ret = MatcherReturn::rejected(&call);
+        drop(ctx_data);
+        let mut ctx_data = ctx_account.try_borrow_mut_data()?;
+        ret.write_to(&mut ctx_data)?;
+        return Ok(());
     }
 
     // Check oracle staleness (reject if > 100 slots old)
@@ -132,7 +140,11 @@ pub fn process_match(
     let clock = Clock::get()?;
     if clock.slot.saturating_sub(last_update) > 100 {
         msg!("VOL-MATCHER: Oracle stale — last update slot {}, current {}", last_update, clock.slot);
-        return Err(VolMatcherError::OracleStale.into());
+        let ret = MatcherReturn::rejected(&call);
+        drop(ctx_data);
+        let mut ctx_data = ctx_account.try_borrow_mut_data()?;
+        ret.write_to(&mut ctx_data)?;
+        return Ok(());
     }
 
     // Dynamic spread based on vol regime
@@ -152,16 +164,18 @@ pub fn process_match(
 
     drop(ctx_data);
 
-    // Write execution price to return buffer using shared utility
+    // Write full ABI-compliant return
+    let ret = MatcherReturn::filled(exec_price, call.req_size, &call);
     let mut ctx_data = ctx_account.try_borrow_mut_data()?;
-    write_exec_price(&mut ctx_data, exec_price);
+    ret.write_to(&mut ctx_data)?;
 
     msg!(
-        "MATCH: price={} spread={} regime={:?} vol_mark={}",
+        "MATCH: price={} spread={} regime={:?} vol_mark={} size={}",
         exec_price,
         total_spread,
         regime,
-        vol_mark
+        vol_mark,
+        call.req_size
     );
 
     Ok(())

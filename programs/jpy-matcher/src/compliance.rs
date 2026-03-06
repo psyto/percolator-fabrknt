@@ -3,16 +3,16 @@ use solana_program::{
     program_error::ProgramError, pubkey::Pubkey, sysvar::Sysvar,
 };
 
-use matcher_common::{verify_lp_pda as verify_lp_pda_common, write_exec_price, compute_exec_price};
-use crate::errors::JpyMatcherError;
+use matcher_common::{verify_lp_pda as verify_lp_pda_common, compute_exec_price, MatcherCall, MatcherReturn};
 use crate::state::*;
 
-/// Tag 0x00: Match with compliance verification
+/// Tag 0x00: Match with compliance verification (CPI from percolator-prog)
 /// Accounts:
 ///   [0] LP PDA (signer)
 ///   [1] Matcher context account (writable)
 ///   [2] User's WhitelistEntry PDA (read, optional for compliance bypass)
 ///   [3] LP owner's WhitelistEntry PDA (read, optional)
+/// Data: 67-byte MatcherCall from percolator-prog
 pub fn process_match_with_compliance(
     _program_id: &Pubkey,
     accounts: &[AccountInfo],
@@ -25,6 +25,9 @@ pub fn process_match_with_compliance(
     let lp_pda = &accounts[0];
     let ctx_account = &accounts[1];
 
+    // Parse the CPI call from percolator-prog
+    let call = MatcherCall::parse(data)?;
+
     verify_lp_pda_common(lp_pda, ctx_account, JPY_MATCHER_MAGIC, "JPY-MATCHER")?;
 
     let ctx_data = ctx_account.try_borrow_data()?;
@@ -36,8 +39,14 @@ pub fn process_match_with_compliance(
 
     if oracle_price == 0 {
         msg!("JPY-MATCHER: Oracle price not set");
-        return Err(JpyMatcherError::OraclePriceNotSet.into());
+        let ret = MatcherReturn::rejected(&call);
+        drop(ctx_data);
+        let mut ctx_data = ctx_account.try_borrow_mut_data()?;
+        ret.write_to(&mut ctx_data)?;
+        return Ok(());
     }
+
+    let trade_size_abs = call.req_size.unsigned_abs() as u64;
 
     // === COMPLIANCE CHECKS ===
     let mut user_kyc_level: u8 = 0;
@@ -54,7 +63,12 @@ pub fn process_match_with_compliance(
                 user_kyc_level,
                 min_kyc
             );
-            return Err(JpyMatcherError::InsufficientKycLevel.into());
+            let ret = MatcherReturn::rejected(&call);
+            drop(user_wl_data);
+            drop(ctx_data);
+            let mut ctx_data = ctx_account.try_borrow_mut_data()?;
+            ret.write_to(&mut ctx_data)?;
+            return Ok(());
         }
 
         // 2. Check KYC not expired
@@ -70,7 +84,12 @@ pub fn process_match_with_compliance(
                 clock.unix_timestamp,
                 user_expiry
             );
-            return Err(JpyMatcherError::KycExpired.into());
+            let ret = MatcherReturn::rejected(&call);
+            drop(user_wl_data);
+            drop(ctx_data);
+            let mut ctx_data = ctx_account.try_borrow_mut_data()?;
+            ret.write_to(&mut ctx_data)?;
+            return Ok(());
         }
 
         // 3. Check jurisdiction not blocked
@@ -81,7 +100,12 @@ pub fn process_match_with_compliance(
                 user_jurisdiction,
                 blocked_jurisdictions
             );
-            return Err(JpyMatcherError::JurisdictionBlocked.into());
+            let ret = MatcherReturn::rejected(&call);
+            drop(user_wl_data);
+            drop(ctx_data);
+            let mut ctx_data = ctx_account.try_borrow_mut_data()?;
+            ret.write_to(&mut ctx_data)?;
+            return Ok(());
         }
 
         // 4. Check daily volume cap
@@ -101,30 +125,26 @@ pub fn process_match_with_compliance(
                     .try_into()
                     .map_err(|_| ProgramError::InvalidAccountData)?,
             );
-            let clock = Clock::get()?;
 
-            // Reset volume if new day (86400 seconds per day)
             let effective_volume = if clock.unix_timestamp > day_reset + 86400 {
-                0u64 // Volume resets
+                0u64
             } else {
                 current_volume
             };
 
-            // Parse trade size from instruction data if available
-            let trade_size = if data.len() >= 9 {
-                u64::from_le_bytes(data[1..9].try_into().unwrap_or([0u8; 8]))
-            } else {
-                0
-            };
-
-            if effective_volume.saturating_add(trade_size) > daily_cap {
+            if effective_volume.saturating_add(trade_size_abs) > daily_cap {
                 msg!(
                     "JPY-MATCHER: Daily volume cap exceeded: {} + {} > {}",
                     effective_volume,
-                    trade_size,
+                    trade_size_abs,
                     daily_cap
                 );
-                return Err(JpyMatcherError::DailyVolumeLimitExceeded.into());
+                let ret = MatcherReturn::rejected(&call);
+                drop(user_wl_data);
+                drop(ctx_data);
+                let mut ctx_data = ctx_account.try_borrow_mut_data()?;
+                ret.write_to(&mut ctx_data)?;
+                return Ok(());
             }
         }
 
@@ -140,13 +160,22 @@ pub fn process_match_with_compliance(
                     user_jurisdiction,
                     lp_jurisdiction
                 );
-                return Err(JpyMatcherError::JurisdictionMismatch.into());
+                let ret = MatcherReturn::rejected(&call);
+                drop(lp_wl_data);
+                drop(user_wl_data);
+                drop(ctx_data);
+                let mut ctx_data = ctx_account.try_borrow_mut_data()?;
+                ret.write_to(&mut ctx_data)?;
+                return Ok(());
             }
         }
     } else if min_kyc > 0 {
-        // KYC required but no whitelist account provided
         msg!("JPY-MATCHER: KYC required but no WhitelistEntry provided");
-        return Err(JpyMatcherError::InsufficientKycLevel.into());
+        let ret = MatcherReturn::rejected(&call);
+        drop(ctx_data);
+        let mut ctx_data = ctx_account.try_borrow_mut_data()?;
+        ret.write_to(&mut ctx_data)?;
+        return Ok(());
     }
 
     // === PRICING ===
@@ -173,43 +202,41 @@ pub fn process_match_with_compliance(
 
     drop(ctx_data);
 
-    // Write execution price to return buffer
+    // Write full ABI-compliant return
+    let ret = MatcherReturn::filled(exec_price, call.req_size, &call);
     let mut ctx_data = ctx_account.try_borrow_mut_data()?;
-    write_exec_price(&mut ctx_data, exec_price);
+    ret.write_to(&mut ctx_data)?;
 
     // Update daily volume
-    if data.len() >= 9 {
-        let trade_size = u64::from_le_bytes(data[1..9].try_into().unwrap_or([0u8; 8]));
-        let current_volume = u64::from_le_bytes(
-            ctx_data[CURRENT_DAY_VOLUME_OFFSET..CURRENT_DAY_VOLUME_OFFSET + 8]
-                .try_into()
-                .map_err(|_| ProgramError::InvalidAccountData)?,
-        );
-        let day_reset = i64::from_le_bytes(
-            ctx_data[DAY_RESET_TIMESTAMP_OFFSET..DAY_RESET_TIMESTAMP_OFFSET + 8]
-                .try_into()
-                .map_err(|_| ProgramError::InvalidAccountData)?,
-        );
-        let clock = Clock::get()?;
+    let current_volume = u64::from_le_bytes(
+        ctx_data[CURRENT_DAY_VOLUME_OFFSET..CURRENT_DAY_VOLUME_OFFSET + 8]
+            .try_into()
+            .map_err(|_| ProgramError::InvalidAccountData)?,
+    );
+    let day_reset = i64::from_le_bytes(
+        ctx_data[DAY_RESET_TIMESTAMP_OFFSET..DAY_RESET_TIMESTAMP_OFFSET + 8]
+            .try_into()
+            .map_err(|_| ProgramError::InvalidAccountData)?,
+    );
+    let clock = Clock::get()?;
 
-        if clock.unix_timestamp > day_reset + 86400 {
-            // New day — reset volume and update timestamp
-            ctx_data[CURRENT_DAY_VOLUME_OFFSET..CURRENT_DAY_VOLUME_OFFSET + 8]
-                .copy_from_slice(&trade_size.to_le_bytes());
-            ctx_data[DAY_RESET_TIMESTAMP_OFFSET..DAY_RESET_TIMESTAMP_OFFSET + 8]
-                .copy_from_slice(&clock.unix_timestamp.to_le_bytes());
-        } else {
-            let new_volume = current_volume.saturating_add(trade_size);
-            ctx_data[CURRENT_DAY_VOLUME_OFFSET..CURRENT_DAY_VOLUME_OFFSET + 8]
-                .copy_from_slice(&new_volume.to_le_bytes());
-        }
+    if clock.unix_timestamp > day_reset + 86400 {
+        ctx_data[CURRENT_DAY_VOLUME_OFFSET..CURRENT_DAY_VOLUME_OFFSET + 8]
+            .copy_from_slice(&trade_size_abs.to_le_bytes());
+        ctx_data[DAY_RESET_TIMESTAMP_OFFSET..DAY_RESET_TIMESTAMP_OFFSET + 8]
+            .copy_from_slice(&clock.unix_timestamp.to_le_bytes());
+    } else {
+        let new_volume = current_volume.saturating_add(trade_size_abs);
+        ctx_data[CURRENT_DAY_VOLUME_OFFSET..CURRENT_DAY_VOLUME_OFFSET + 8]
+            .copy_from_slice(&new_volume.to_le_bytes());
     }
 
     msg!(
-        "MATCH: price={} spread={} kyc_level={}",
+        "MATCH: price={} spread={} kyc_level={} size={}",
         exec_price,
         capped_spread,
-        user_kyc_level
+        user_kyc_level,
+        call.req_size
     );
 
     Ok(())

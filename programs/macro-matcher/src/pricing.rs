@@ -5,7 +5,7 @@ use solana_program::{
 
 use matcher_common::{
     compute_exec_price, verify_init_preconditions, verify_lp_pda as verify_lp_pda_common,
-    write_exec_price, write_header,
+    write_header, MatcherCall, MatcherReturn,
 };
 
 use crate::errors::MacroMatcherError;
@@ -102,14 +102,15 @@ pub fn process_init(
     Ok(())
 }
 
-/// Tag 0x00: Execute match — compute regime-adjusted execution price
+/// Tag 0x00: Execute match (CPI from percolator-prog)
 /// Accounts:
 ///   [0] LP PDA (signer)
 ///   [1] Matcher context account (writable)
+/// Data: 67-byte MatcherCall from percolator-prog
 pub fn process_match(
     _program_id: &Pubkey,
     accounts: &[AccountInfo],
-    _data: &[u8],
+    data: &[u8],
 ) -> ProgramResult {
     if accounts.len() < 2 {
         return Err(ProgramError::NotEnoughAccountKeys);
@@ -117,6 +118,9 @@ pub fn process_match(
 
     let lp_pda = &accounts[0];
     let ctx_account = &accounts[1];
+
+    // Parse the CPI call from percolator-prog
+    let call = MatcherCall::parse(data)?;
 
     // Verify LP PDA signature, magic, and PDA match
     verify_lp_pda_common(lp_pda, ctx_account, MACRO_MATCHER_MAGIC, "MACRO-MATCHER")?;
@@ -153,7 +157,11 @@ pub fn process_match(
     // Reject if index not synced (mark == 0)
     if mark_price == 0 {
         msg!("MACRO-MATCHER: Index not synced — oracle sync required");
-        return Err(MacroMatcherError::IndexNotSynced.into());
+        let ret = MatcherReturn::rejected(&call);
+        drop(ctx_data);
+        let mut ctx_data = ctx_account.try_borrow_mut_data()?;
+        ret.write_to(&mut ctx_data)?;
+        return Ok(());
     }
 
     // Check oracle staleness (reject if > 150 slots old)
@@ -169,7 +177,11 @@ pub fn process_match(
             last_update,
             clock.slot
         );
-        return Err(MacroMatcherError::OracleStale.into());
+        let ret = MatcherReturn::rejected(&call);
+        drop(ctx_data);
+        let mut ctx_data = ctx_account.try_borrow_mut_data()?;
+        ret.write_to(&mut ctx_data)?;
+        return Ok(());
     }
 
     // Compute regime-adjusted spread
@@ -191,9 +203,10 @@ pub fn process_match(
 
     drop(ctx_data);
 
-    // Write execution price to return buffer and update stats
+    // Write full ABI-compliant return and update stats
+    let ret = MatcherReturn::filled(exec_price, call.req_size, &call);
     let mut ctx_data = ctx_account.try_borrow_mut_data()?;
-    write_exec_price(&mut ctx_data, exec_price);
+    ret.write_to(&mut ctx_data)?;
 
     // Update trade stats
     let old_trades = u64::from_le_bytes(
@@ -205,11 +218,12 @@ pub fn process_match(
         .copy_from_slice(&(old_trades.saturating_add(1)).to_le_bytes());
 
     msg!(
-        "MATCH: price={} spread={} regime={:?} mark={}",
+        "MATCH: price={} spread={} regime={:?} mark={} size={}",
         exec_price,
         total_spread,
         regime,
-        mark_price
+        mark_price,
+        call.req_size
     );
 
     Ok(())

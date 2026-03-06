@@ -8,31 +8,38 @@ Percolator is a modular on-chain matching engine. Anatoly's core repos provide t
 
 ```
 ┌─────────────────────────────────────────────────────────┐
-│  percolator-prog         (Anatoly)                      │
-│  Core on-chain protocol — order book, matching engine,  │
-│  settlement, and account layout                         │
+│  percolator            (Anatoly)                        │
+│  Risk engine crate — PnL, haircuts, coverage ratio      │
 └────────────────────────┬────────────────────────────────┘
-                         │ CPI (cross-program invocation)
+                         │ linked as dependency
 ┌────────────────────────▼────────────────────────────────┐
-│  percolator-fabrknt      (Fabrknt / this repo)          │
-│  Custom matchers that implement pricing strategies      │
-│  on top of the core protocol                            │
-│                                                         │
-│  programs/  ── on-chain matching programs (Rust)        │
-│  sdk/       ── shared CPI library used by all matchers  │
-│  app/       ── off-chain keepers & solvers (TypeScript)  │
-│  apps/      ── frontend dashboards (Next.js)            │
-│  cli/       ── CLI tools per matcher                    │
+│  percolator-prog       (Anatoly)                        │
+│  On-chain program — slab accounts, trade instructions,  │
+│  settlement. Calls matchers via CPI (TradeCpi).         │
+└───────┬─────────────────────────────────────────────────┘
+        │ CPI call (67-byte MatcherCall)
+        │ matcher writes 64-byte MatcherReturn
+        │
+        ├──► percolator-match  (Anatoly's reference: ±50bps passive)
+        │
+        ├──► privacy-matcher  ┐
+        ├──► vol-matcher      │
+        ├──► jpy-matcher      ├─ percolator-fabrknt/programs/ (this repo)
+        ├──► event-matcher    │
+        └──► macro-matcher    ┘
+
+┌─────────────────────────────────────────────────────────┐
+│  percolator-cli        (Anatoly)                        │
+│  CLI for the core protocol — market setup, inspection   │
 └─────────────────────────────────────────────────────────┘
 
 ┌─────────────────────────────────────────────────────────┐
-│  percolator-cli          (Anatoly)                      │
-│  CLI for the core protocol — market setup, inspection,  │
-│  and admin operations                                   │
+│  percolator-meta       (Anatoly)                        │
+│  Staking rewards + MetaDAO futarchy governance          │
 └─────────────────────────────────────────────────────────┘
 ```
 
-**percolator-prog** defines the on-chain accounts and instructions that all matchers must conform to. Each matcher in `programs/` uses CPI via the shared `sdk/` (matcher-common) to interact with the core protocol. The off-chain `app/` services (keepers, solvers, oracles) watch the chain and submit transactions using the matcher programs. The `apps/` frontends provide dashboards for monitoring and management.
+**percolator-prog** owns the market state (slab accounts) and calls into matcher programs via CPI during `TradeCpi`. Each matcher in `programs/` receives a 67-byte `MatcherCall` (containing `req_id`, `lp_account_id`, `oracle_price_e6`, `req_size`) and writes back a 64-byte `MatcherReturn` (with `exec_price_e6`, `exec_size`, and echoed request fields). The shared `sdk/` (matcher-common) provides the ABI types (`MatcherCall`, `MatcherReturn`) and context account utilities. The off-chain `app/` services (keepers, solvers, oracles) submit transactions to percolator-prog, which then CPI-calls the matcher. The `apps/` frontends provide dashboards for monitoring and management.
 
 ## Prerequisites
 

@@ -3,7 +3,7 @@ use solana_program::{
     program_error::ProgramError, pubkey::Pubkey, sysvar::Sysvar,
 };
 
-use matcher_common::{verify_lp_pda as verify_lp_pda_common, verify_init_preconditions, write_header, write_exec_price};
+use matcher_common::{verify_lp_pda as verify_lp_pda_common, verify_init_preconditions, write_header, MatcherCall, MatcherReturn};
 
 use crate::errors::EventMatcherError;
 use crate::state::*;
@@ -101,14 +101,15 @@ pub fn process_init(
     Ok(())
 }
 
-/// Tag 0x00: Execute match -- probability-based pricing with edge spread
+/// Tag 0x00: Execute match (CPI from percolator-prog)
 /// Accounts:
 ///   [0] LP PDA (signer)
 ///   [1] Matcher context account (writable)
+/// Data: 67-byte MatcherCall from percolator-prog
 pub fn process_match(
     _program_id: &Pubkey,
     accounts: &[AccountInfo],
-    _data: &[u8],
+    data: &[u8],
 ) -> ProgramResult {
     if accounts.len() < 2 {
         return Err(ProgramError::NotEnoughAccountKeys);
@@ -116,6 +117,9 @@ pub fn process_match(
 
     let lp_pda = &accounts[0];
     let ctx_account = &accounts[1];
+
+    // Parse the CPI call from percolator-prog
+    let call = MatcherCall::parse(data)?;
 
     // Verify LP PDA signature + context magic + PDA match
     verify_lp_pda_common(lp_pda, ctx_account, EVENT_MATCHER_MAGIC, "EVENT-MATCHER")?;
@@ -125,7 +129,11 @@ pub fn process_match(
     // Check if market is resolved
     if ctx_data[IS_RESOLVED_OFFSET] == 1 {
         msg!("EVENT-MATCHER: Market is resolved -- no more trading");
-        return Err(EventMatcherError::MarketResolved.into());
+        let ret = MatcherReturn::rejected(&call);
+        drop(ctx_data);
+        let mut ctx_data = ctx_account.try_borrow_mut_data()?;
+        ret.write_to(&mut ctx_data)?;
+        return Ok(());
     }
 
     let base_spread = u32::from_le_bytes(
@@ -149,7 +157,11 @@ pub fn process_match(
     // Reject if probability is 0 (not initialized)
     if probability_e6 == 0 {
         msg!("EVENT-MATCHER: Probability not set");
-        return Err(EventMatcherError::ProbabilityNotSet.into());
+        let ret = MatcherReturn::rejected(&call);
+        drop(ctx_data);
+        let mut ctx_data = ctx_account.try_borrow_mut_data()?;
+        ret.write_to(&mut ctx_data)?;
+        return Ok(());
     }
 
     // Check oracle staleness (reject if > 200 slots old)
@@ -159,18 +171,17 @@ pub fn process_match(
     let clock = Clock::get()?;
     if clock.slot.saturating_sub(last_update) > 200 {
         msg!("EVENT-MATCHER: Oracle stale -- last update slot {}, current {}", last_update, clock.slot);
-        return Err(EventMatcherError::OracleStale.into());
+        let ret = MatcherReturn::rejected(&call);
+        drop(ctx_data);
+        let mut ctx_data = ctx_account.try_borrow_mut_data()?;
+        ret.write_to(&mut ctx_data)?;
+        return Ok(());
     }
 
-    // Edge spread calculation:
-    // Edge factor = 1 / (p * (1-p) * 4)
-    // At 50%: factor = 1.0 (no extra spread)
-    // At 10%: factor ~2.78 (wider spread)
-    // At 1%:  factor ~25.3 (much wider spread)
+    // Edge spread calculation
     let p = probability_e6 as u128;
     let one_minus_p = MAX_PROBABILITY as u128 - p;
 
-    // p * (1-p) * 4 / 1e12 gives us the denominator scaled appropriately
     let edge_denominator = p
         .checked_mul(one_minus_p)
         .unwrap_or(0)
@@ -179,9 +190,9 @@ pub fn process_match(
         / 1_000_000_000_000u128;
 
     let edge_factor = if edge_denominator > 0 {
-        std::cmp::min(1_000_000u128 / edge_denominator, 10_000_000u128) // Cap at 10x
+        std::cmp::min(1_000_000u128 / edge_denominator, 10_000_000u128)
     } else {
-        10_000_000u128 // Max factor if at exactly 0% or 100%
+        10_000_000u128
     };
 
     let adjusted_edge = (edge_spread as u128)
@@ -189,14 +200,11 @@ pub fn process_match(
         .unwrap_or(0)
         / 1_000_000u128;
 
-    // Total spread = base + edge_adjustment + signal_adjustment
     let total_spread = std::cmp::min(
         (base_spread as u64).saturating_add(adjusted_edge as u64).saturating_add(signal_adj),
         max_spread as u64,
     );
 
-    // Mark price = probability * 1e6 (already in e6 format)
-    // Exec price = mark * (1 + spread/10000)
     let spread_mult = 10_000u64.saturating_add(total_spread);
     let exec_price = ((probability_e6 as u128)
         .checked_mul(spread_mult as u128)
@@ -205,16 +213,18 @@ pub fn process_match(
 
     drop(ctx_data);
 
-    // Write execution price to return buffer
+    // Write full ABI-compliant return
+    let ret = MatcherReturn::filled(exec_price, call.req_size, &call);
     let mut ctx_data = ctx_account.try_borrow_mut_data()?;
-    write_exec_price(&mut ctx_data, exec_price);
+    ret.write_to(&mut ctx_data)?;
 
     msg!(
-        "MATCH: price={} spread={} probability={} edge_factor={}",
+        "MATCH: price={} spread={} probability={} edge_factor={} size={}",
         exec_price,
         total_spread,
         probability_e6,
-        edge_factor
+        edge_factor,
+        call.req_size
     );
 
     Ok(())

@@ -7,7 +7,7 @@ use crate::errors::PrivacyMatcherError;
 use crate::state::*;
 use matcher_common::{
     verify_lp_pda as verify_lp_pda_common, verify_init_preconditions, write_header,
-    write_exec_price, compute_exec_price,
+    compute_exec_price, MatcherCall, MatcherReturn,
 };
 
 /// Tag 0x02: Initialize privacy matcher context
@@ -107,13 +107,11 @@ pub fn process_init(
     Ok(())
 }
 
-/// Tag 0x00: Execute match — compute execution price from solver-verified trade
+/// Tag 0x00: Execute match (CPI from percolator-prog)
 /// Accounts:
 ///   [0] LP PDA (signer)
 ///   [1] Matcher context account (writable)
-/// Data layout:
-///   [0] tag (0x00)
-///   [1..9] trade_size_abs (u64 LE) — absolute trade size for volume tracking
+/// Data: 67-byte MatcherCall from percolator-prog
 pub fn process_match(
     _program_id: &Pubkey,
     accounts: &[AccountInfo],
@@ -125,6 +123,9 @@ pub fn process_match(
 
     let lp_pda = &accounts[0];
     let ctx_account = &accounts[1];
+
+    // Parse the CPI call from percolator-prog
+    let call = MatcherCall::parse(data)?;
 
     // Verify LP PDA signature, context initialization, and PDA match
     verify_lp_pda_common(lp_pda, ctx_account, PRIVACY_MATCHER_MAGIC, "PRIVACY-MATCHER")?;
@@ -155,7 +156,11 @@ pub fn process_match(
     // Reject if oracle price not set
     if oracle_price == 0 {
         msg!("PRIVACY-MATCHER: Oracle price not set");
-        return Err(PrivacyMatcherError::OraclePriceNotSet.into());
+        let ret = MatcherReturn::rejected(&call);
+        drop(ctx_data);
+        let mut ctx_data = ctx_account.try_borrow_mut_data()?;
+        ret.write_to(&mut ctx_data)?;
+        return Ok(());
     }
 
     // Compute execution price
@@ -170,9 +175,10 @@ pub fn process_match(
     // Drop read borrow before mutable borrow
     drop(ctx_data);
 
-    // Write execution price to return buffer
+    // Write full ABI-compliant return
+    let ret = MatcherReturn::filled(exec_price, call.req_size, &call);
     let mut ctx_data = ctx_account.try_borrow_mut_data()?;
-    write_exec_price(&mut ctx_data, exec_price);
+    ret.write_to(&mut ctx_data)?;
 
     // Update last execution price
     ctx_data[LAST_EXEC_PRICE_OFFSET..LAST_EXEC_PRICE_OFFSET + 8]
@@ -187,28 +193,23 @@ pub fn process_match(
     ctx_data[TOTAL_ORDERS_OFFSET..TOTAL_ORDERS_OFFSET + 8]
         .copy_from_slice(&count.saturating_add(1).to_le_bytes());
 
-    // Update volume if trade size provided
-    if data.len() >= 9 {
-        let trade_size = u64::from_le_bytes(
-            data[1..9]
-                .try_into()
-                .map_err(|_| ProgramError::InvalidInstructionData)?,
-        );
-        let current_volume = u128::from_le_bytes(
-            ctx_data[TOTAL_VOLUME_OFFSET..TOTAL_VOLUME_OFFSET + 16]
-                .try_into()
-                .map_err(|_| ProgramError::InvalidAccountData)?,
-        );
-        let new_volume = current_volume.saturating_add(trade_size as u128);
+    // Update volume
+    let trade_size_abs = call.req_size.unsigned_abs();
+    let current_volume = u128::from_le_bytes(
         ctx_data[TOTAL_VOLUME_OFFSET..TOTAL_VOLUME_OFFSET + 16]
-            .copy_from_slice(&new_volume.to_le_bytes());
-    }
+            .try_into()
+            .map_err(|_| ProgramError::InvalidAccountData)?,
+    );
+    let new_volume = current_volume.saturating_add(trade_size_abs);
+    ctx_data[TOTAL_VOLUME_OFFSET..TOTAL_VOLUME_OFFSET + 16]
+        .copy_from_slice(&new_volume.to_le_bytes());
 
     msg!(
-        "MATCH: price={} spread={} oracle={}",
+        "MATCH: price={} spread={} oracle={} size={}",
         exec_price,
         total_spread,
-        oracle_price
+        oracle_price,
+        call.req_size
     );
 
     Ok(())

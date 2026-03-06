@@ -16,6 +16,139 @@ pub const MAGIC_OFFSET: usize = 64;
 /// LP PDA offset (all matchers store LP PDA at byte 80)
 pub const LP_PDA_OFFSET: usize = 80;
 
+// =========================================================================
+// Matcher CPI ABI — must match percolator-prog's matcher_abi module
+// =========================================================================
+
+pub const MATCHER_ABI_VERSION: u32 = 1;
+pub const MATCHER_CALL_TAG: u8 = 0;
+pub const MATCHER_CALL_LEN: usize = 67;
+
+pub const FLAG_VALID: u32 = 1;
+pub const FLAG_PARTIAL_OK: u32 = 2;
+pub const FLAG_REJECTED: u32 = 4;
+
+/// Parsed matcher call from percolator-prog CPI instruction data (67 bytes).
+#[derive(Clone, Copy, Debug)]
+pub struct MatcherCall {
+    pub req_id: u64,
+    pub lp_idx: u16,
+    pub lp_account_id: u64,
+    pub oracle_price_e6: u64,
+    pub req_size: i128,
+}
+
+impl MatcherCall {
+    pub fn parse(data: &[u8]) -> Result<Self, ProgramError> {
+        if data.len() < MATCHER_CALL_LEN {
+            return Err(ProgramError::InvalidInstructionData);
+        }
+        if data[0] != MATCHER_CALL_TAG {
+            return Err(ProgramError::InvalidInstructionData);
+        }
+
+        let req_id = u64::from_le_bytes(data[1..9].try_into().unwrap());
+        let lp_idx = u16::from_le_bytes(data[9..11].try_into().unwrap());
+        let lp_account_id = u64::from_le_bytes(data[11..19].try_into().unwrap());
+        let oracle_price_e6 = u64::from_le_bytes(data[19..27].try_into().unwrap());
+        let req_size = i128::from_le_bytes(data[27..43].try_into().unwrap());
+
+        // Verify reserved bytes are zero
+        for &b in &data[43..67] {
+            if b != 0 {
+                return Err(ProgramError::InvalidInstructionData);
+            }
+        }
+
+        Ok(Self {
+            req_id,
+            lp_idx,
+            lp_account_id,
+            oracle_price_e6,
+            req_size,
+        })
+    }
+}
+
+/// Matcher return structure written to context account at offset 0 (64 bytes).
+/// Must match percolator-prog's `matcher_abi::MatcherReturn` layout exactly.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct MatcherReturn {
+    pub abi_version: u32,
+    pub flags: u32,
+    pub exec_price_e6: u64,
+    pub exec_size: i128,
+    pub req_id: u64,
+    pub lp_account_id: u64,
+    pub oracle_price_e6: u64,
+    pub reserved: u64,
+}
+
+impl MatcherReturn {
+    /// Write the full 64-byte return to context account data at offset 0.
+    pub fn write_to(&self, data: &mut [u8]) -> Result<(), ProgramError> {
+        if data.len() < RETURN_DATA_SIZE {
+            return Err(ProgramError::AccountDataTooSmall);
+        }
+        data[0..4].copy_from_slice(&self.abi_version.to_le_bytes());
+        data[4..8].copy_from_slice(&self.flags.to_le_bytes());
+        data[8..16].copy_from_slice(&self.exec_price_e6.to_le_bytes());
+        data[16..32].copy_from_slice(&self.exec_size.to_le_bytes());
+        data[32..40].copy_from_slice(&self.req_id.to_le_bytes());
+        data[40..48].copy_from_slice(&self.lp_account_id.to_le_bytes());
+        data[48..56].copy_from_slice(&self.oracle_price_e6.to_le_bytes());
+        data[56..64].copy_from_slice(&self.reserved.to_le_bytes());
+        Ok(())
+    }
+
+    /// Create a filled return (trade accepted).
+    pub fn filled(
+        exec_price_e6: u64,
+        exec_size: i128,
+        call: &MatcherCall,
+    ) -> Self {
+        Self {
+            abi_version: MATCHER_ABI_VERSION,
+            flags: FLAG_VALID,
+            exec_price_e6,
+            exec_size,
+            req_id: call.req_id,
+            lp_account_id: call.lp_account_id,
+            oracle_price_e6: call.oracle_price_e6,
+            reserved: 0,
+        }
+    }
+
+    /// Create a zero-fill return (no fill, but not rejected).
+    pub fn zero_fill(call: &MatcherCall) -> Self {
+        Self {
+            abi_version: MATCHER_ABI_VERSION,
+            flags: FLAG_VALID | FLAG_PARTIAL_OK,
+            exec_price_e6: 1, // Must be non-zero per ABI
+            exec_size: 0,
+            req_id: call.req_id,
+            lp_account_id: call.lp_account_id,
+            oracle_price_e6: call.oracle_price_e6,
+            reserved: 0,
+        }
+    }
+
+    /// Create a rejected return (trade refused by matcher).
+    pub fn rejected(call: &MatcherCall) -> Self {
+        Self {
+            abi_version: MATCHER_ABI_VERSION,
+            flags: FLAG_VALID | FLAG_REJECTED,
+            exec_price_e6: 1, // Must be non-zero per ABI
+            exec_size: 0,
+            req_id: call.req_id,
+            lp_account_id: call.lp_account_id,
+            oracle_price_e6: call.oracle_price_e6,
+            reserved: 0,
+        }
+    }
+}
+
 /// Read a u64 magic value from the context account
 pub fn read_magic(ctx_data: &[u8]) -> u64 {
     if ctx_data.len() < MAGIC_OFFSET + 8 {
@@ -141,7 +274,10 @@ pub fn write_header(ctx_data: &mut [u8], magic: u64, mode: u8, lp_pda: &Pubkey) 
 }
 
 /// Write an execution price to the return buffer (first 8 bytes of context account).
-/// This is how matchers communicate the price back to Percolator during CPI.
+///
+/// DEPRECATED: Use `MatcherReturn::write_to()` instead for full ABI compliance.
+/// This only writes 8 bytes at offset 0, which does NOT conform to percolator-prog's
+/// 64-byte MatcherReturn ABI. Kept for backward compatibility during migration.
 pub fn write_exec_price(ctx_data: &mut [u8], price: u64) {
     ctx_data[0..8].copy_from_slice(&price.to_le_bytes());
 }
@@ -208,106 +344,185 @@ mod tests {
     }
 
     // ===================================================================
-    // CPI Contract Verification Tests
+    // Matcher CPI ABI Tests
     //
-    // These tests verify the byte-level contract that Percolator relies on
-    // when invoking matchers via CPI. The contract is:
-    //   1. Context account must be exactly CTX_SIZE (320) bytes
-    //   2. Magic at offset 64 must match the matcher type
-    //   3. LP PDA at offset 80 must match the signing account
-    //   4. Execution price is written to offset 0 (first 8 bytes)
-    //   5. write_header produces a context that passes verify_magic
+    // These tests verify the byte-level ABI contract that percolator-prog
+    // expects from matchers via CPI:
+    //   - MatcherCall: 67-byte instruction data sent by percolator-prog
+    //   - MatcherReturn: 64-byte return written at offset 0 of context
+    // ===================================================================
+
+    #[test]
+    fn test_matcher_call_parse() {
+        let mut data = vec![0u8; MATCHER_CALL_LEN];
+        data[0] = MATCHER_CALL_TAG;
+        data[1..9].copy_from_slice(&42u64.to_le_bytes()); // req_id
+        data[9..11].copy_from_slice(&3u16.to_le_bytes()); // lp_idx
+        data[11..19].copy_from_slice(&99u64.to_le_bytes()); // lp_account_id
+        data[19..27].copy_from_slice(&100_000_000u64.to_le_bytes()); // oracle_price_e6
+        data[27..43].copy_from_slice(&(-500i128).to_le_bytes()); // req_size
+
+        let call = MatcherCall::parse(&data).unwrap();
+        assert_eq!(call.req_id, 42);
+        assert_eq!(call.lp_idx, 3);
+        assert_eq!(call.lp_account_id, 99);
+        assert_eq!(call.oracle_price_e6, 100_000_000);
+        assert_eq!(call.req_size, -500);
+    }
+
+    #[test]
+    fn test_matcher_call_rejects_wrong_tag() {
+        let mut data = vec![0u8; MATCHER_CALL_LEN];
+        data[0] = 1; // wrong tag
+        assert!(MatcherCall::parse(&data).is_err());
+    }
+
+    #[test]
+    fn test_matcher_call_rejects_short_data() {
+        let data = vec![0u8; 66]; // one byte short
+        assert!(MatcherCall::parse(&data).is_err());
+    }
+
+    #[test]
+    fn test_matcher_call_rejects_nonzero_reserved() {
+        let mut data = vec![0u8; MATCHER_CALL_LEN];
+        data[0] = MATCHER_CALL_TAG;
+        data[50] = 1; // non-zero in reserved region
+        assert!(MatcherCall::parse(&data).is_err());
+    }
+
+    #[test]
+    fn test_matcher_return_filled_layout() {
+        let mut data = vec![0u8; MATCHER_CALL_LEN];
+        data[0] = MATCHER_CALL_TAG;
+        data[1..9].copy_from_slice(&7u64.to_le_bytes());
+        data[11..19].copy_from_slice(&88u64.to_le_bytes());
+        data[19..27].copy_from_slice(&50_000_000u64.to_le_bytes());
+        data[27..43].copy_from_slice(&1000i128.to_le_bytes());
+        let call = MatcherCall::parse(&data).unwrap();
+
+        let ret = MatcherReturn::filled(50_250_000, 1000, &call);
+        let mut buf = vec![0u8; 64];
+        ret.write_to(&mut buf).unwrap();
+
+        // Verify ABI layout matches percolator-prog's read_matcher_return
+        assert_eq!(u32::from_le_bytes(buf[0..4].try_into().unwrap()), MATCHER_ABI_VERSION);
+        assert_eq!(u32::from_le_bytes(buf[4..8].try_into().unwrap()), FLAG_VALID);
+        assert_eq!(u64::from_le_bytes(buf[8..16].try_into().unwrap()), 50_250_000);
+        assert_eq!(i128::from_le_bytes(buf[16..32].try_into().unwrap()), 1000);
+        assert_eq!(u64::from_le_bytes(buf[32..40].try_into().unwrap()), 7); // req_id echoed
+        assert_eq!(u64::from_le_bytes(buf[40..48].try_into().unwrap()), 88); // lp_account_id echoed
+        assert_eq!(u64::from_le_bytes(buf[48..56].try_into().unwrap()), 50_000_000); // oracle echoed
+        assert_eq!(u64::from_le_bytes(buf[56..64].try_into().unwrap()), 0); // reserved
+    }
+
+    #[test]
+    fn test_matcher_return_zero_fill() {
+        let mut data = vec![0u8; MATCHER_CALL_LEN];
+        data[0] = MATCHER_CALL_TAG;
+        data[1..9].copy_from_slice(&5u64.to_le_bytes());
+        data[11..19].copy_from_slice(&10u64.to_le_bytes());
+        data[19..27].copy_from_slice(&100u64.to_le_bytes());
+        let call = MatcherCall::parse(&data).unwrap();
+
+        let ret = MatcherReturn::zero_fill(&call);
+        let mut buf = vec![0u8; 64];
+        ret.write_to(&mut buf).unwrap();
+
+        assert_eq!(u32::from_le_bytes(buf[0..4].try_into().unwrap()), MATCHER_ABI_VERSION);
+        assert_eq!(u32::from_le_bytes(buf[4..8].try_into().unwrap()), FLAG_VALID | FLAG_PARTIAL_OK);
+        assert_eq!(u64::from_le_bytes(buf[8..16].try_into().unwrap()), 1); // non-zero
+        assert_eq!(i128::from_le_bytes(buf[16..32].try_into().unwrap()), 0); // zero fill
+    }
+
+    #[test]
+    fn test_matcher_return_rejected() {
+        let mut data = vec![0u8; MATCHER_CALL_LEN];
+        data[0] = MATCHER_CALL_TAG;
+        data[1..9].copy_from_slice(&5u64.to_le_bytes());
+        data[11..19].copy_from_slice(&10u64.to_le_bytes());
+        data[19..27].copy_from_slice(&100u64.to_le_bytes());
+        let call = MatcherCall::parse(&data).unwrap();
+
+        let ret = MatcherReturn::rejected(&call);
+        let mut buf = vec![0u8; 64];
+        ret.write_to(&mut buf).unwrap();
+
+        assert_eq!(u32::from_le_bytes(buf[4..8].try_into().unwrap()), FLAG_VALID | FLAG_REJECTED);
+    }
+
+    #[test]
+    fn test_matcher_return_does_not_corrupt_header() {
+        let mut data = vec![0u8; CTX_SIZE];
+        let magic = 0x5052_4956_4d41_5443u64;
+        let lp = Pubkey::new_unique();
+        write_header(&mut data, magic, 0, &lp);
+
+        // Write a MatcherReturn at offset 0
+        let ret = MatcherReturn {
+            abi_version: MATCHER_ABI_VERSION,
+            flags: FLAG_VALID,
+            exec_price_e6: 100_000_000,
+            exec_size: 500,
+            req_id: 1,
+            lp_account_id: 2,
+            oracle_price_e6: 99_500_000,
+            reserved: 0,
+        };
+        ret.write_to(&mut data).unwrap();
+
+        // Header at offset 64+ must be intact
+        assert!(verify_magic(&data, magic));
+        assert_eq!(read_lp_pda(&data), lp);
+    }
+
+    // ===================================================================
+    // Legacy CPI Contract Tests (kept for write_header / verify_magic)
     // ===================================================================
 
     #[test]
     fn test_cpi_contract_header_roundtrip() {
-        // Verify that write_header creates a context that passes all CPI checks
         let mut data = vec![0u8; CTX_SIZE];
-        let magic = 0x4556_4e54_4d41_5443u64; // EVENT_MATCHER_MAGIC
+        let magic = 0x4556_4e54_4d41_5443u64;
         let lp = Pubkey::new_unique();
 
         write_header(&mut data, magic, 1, &lp);
 
-        // CPI check 1: magic verification passes
         assert!(verify_magic(&data, magic));
-
-        // CPI check 2: LP PDA can be read back
         assert_eq!(read_lp_pda(&data), lp);
-
-        // CPI check 3: version is 1
         assert_eq!(u32::from_le_bytes(data[72..76].try_into().unwrap()), 1);
-
-        // CPI check 4: mode is preserved
         assert_eq!(data[76], 1);
-
-        // CPI check 5: return data region is zeroed
         assert!(data[RETURN_DATA_OFFSET..RETURN_DATA_OFFSET + RETURN_DATA_SIZE]
             .iter()
             .all(|&b| b == 0));
     }
 
     #[test]
-    fn test_cpi_contract_exec_price_location() {
-        // Percolator reads the exec price from bytes 0..8 of the context account.
-        // Verify the price is written at the correct offset and doesn't corrupt
-        // other fields.
-        let mut data = vec![0u8; CTX_SIZE];
-        let magic = 0x564F_4c4d_4154_4348u64; // VOL_MATCHER_MAGIC
-        let lp = Pubkey::new_unique();
-
-        write_header(&mut data, magic, 0, &lp);
-        write_exec_price(&mut data, 42_000_000);
-
-        // Price is at offset 0
-        assert_eq!(
-            u64::from_le_bytes(data[0..8].try_into().unwrap()),
-            42_000_000
-        );
-
-        // Magic is not corrupted (at offset 64, well past the 8-byte price)
-        assert!(verify_magic(&data, magic));
-
-        // LP PDA is not corrupted (at offset 80)
-        assert_eq!(read_lp_pda(&data), lp);
-    }
-
-    #[test]
     fn test_cpi_contract_magic_mismatch_rejected() {
-        // A matcher initialized with one magic must reject another magic.
-        // This prevents cross-matcher CPI attacks.
         let mut data = vec![0u8; CTX_SIZE];
         let privacy_magic = 0x5052_4956_4d41_5443u64;
         let vol_magic = 0x564F_4c4d_4154_4348u64;
 
         write_header(&mut data, privacy_magic, 0, &Pubkey::new_unique());
 
-        // Correct magic passes
         assert!(verify_magic(&data, privacy_magic));
-        // Wrong magic is rejected
         assert!(!verify_magic(&data, vol_magic));
     }
 
     #[test]
     fn test_cpi_contract_lp_pda_mismatch_detected() {
-        // The LP PDA stored in the context must match the signer.
-        // Verify that read_lp_pda returns a different pubkey when the
-        // context was initialized with a different LP.
         let mut data = vec![0u8; CTX_SIZE];
         let lp_a = Pubkey::new_unique();
         let lp_b = Pubkey::new_unique();
 
         write_header(&mut data, 0x1234_5678_9ABC_DEF0, 0, &lp_a);
 
-        // Correct LP passes
         assert_eq!(read_lp_pda(&data), lp_a);
-        // Different LP detected
         assert_ne!(read_lp_pda(&data), lp_b);
     }
 
     #[test]
     fn test_cpi_contract_uninitialized_context_rejected() {
-        // A zeroed-out context account must fail magic verification.
-        // This prevents matchers from processing trades on uninitialized accounts.
         let data = vec![0u8; CTX_SIZE];
         let any_magic = 0x5052_4956_4d41_5443u64;
 
@@ -316,10 +531,8 @@ mod tests {
 
     #[test]
     fn test_cpi_contract_undersized_context_rejected() {
-        // Context accounts smaller than CTX_SIZE must fail verification.
-        let mut data = vec![0u8; 200]; // < 320
+        let mut data = vec![0u8; 200];
         let magic = 0x5052_4956_4d41_5443u64;
-        // Even if we write magic at the right offset, size check should fail
         if data.len() > MAGIC_OFFSET + 8 {
             data[MAGIC_OFFSET..MAGIC_OFFSET + 8].copy_from_slice(&magic.to_le_bytes());
         }
