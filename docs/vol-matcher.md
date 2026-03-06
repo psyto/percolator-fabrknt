@@ -1,6 +1,6 @@
 # vol-matcher
 
-A [Percolator](https://github.com/nicholasgasior/percolator) custom matching program that prices perpetual contracts where the **underlying is realized volatility**. The mark price tracks [Sigma](https://github.com/nicholasgasior/sigma)'s VarianceTracker (annualized realized vol in bps). Traders go long vol (profit when vol increases) or short vol (profit when vol decreases).
+A [Percolator](https://github.com/aeyakovenko/percolator) custom matching program that prices perpetual contracts where the **underlying is realized volatility**. The mark price tracks [Sigma](https://github.com/aeyakovenko/sigma)'s VarianceTracker (annualized realized vol in bps). Traders go long vol (profit when vol increases) or short vol (profit when vol decreases).
 
 ## How It Works
 

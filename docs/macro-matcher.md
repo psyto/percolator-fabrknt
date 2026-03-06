@@ -1,6 +1,6 @@
 # macro-matcher
 
-A [Percolator](https://github.com/nicholasgasior/percolator) custom matching program that creates a **perpetual contract on the real interest rate** (nominal rate minus inflation expectations). Inspired by Gary Stevenson's "The Trading Game" thesis — that wealth inequality forces interest rates to zero permanently.
+A [Percolator](https://github.com/aeyakovenko/percolator) custom matching program that creates a **perpetual contract on the real interest rate** (nominal rate minus inflation expectations). Inspired by Gary Stevenson's "The Trading Game" thesis — that wealth inequality forces interest rates to zero permanently.
 
 **Going LONG = betting real rates rise** (economy recovers, policy works).
 **Going SHORT = Stevenson's bet** (inequality keeps rates at zero/negative forever).

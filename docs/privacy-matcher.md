@@ -1,6 +1,6 @@
 # privacy-matcher
 
-A [Percolator](https://github.com/nicholasgasior/percolator) custom matching program that accepts **encrypted trade intents** via an off-chain solver, preventing MEV and frontrunning on Solana perpetual futures.
+A [Percolator](https://github.com/aeyakovenko/percolator) custom matching program that accepts **encrypted trade intents** via an off-chain solver, preventing MEV and frontrunning on Solana perpetual futures.
 
 ## How It Works
 

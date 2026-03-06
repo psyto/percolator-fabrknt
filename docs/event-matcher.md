@@ -1,13 +1,13 @@
 # event-matcher
 
-A [Percolator](https://github.com/nicholasgasior/percolator) custom matching program for **perpetual contracts on event probabilities**. Traders take leveraged perpetual positions on a continuous probability (0-100%). The mark price = event probability * 1,000,000. Funding rate anchors the perp price to the oracle probability.
+A [Percolator](https://github.com/aeyakovenko/percolator) custom matching program for **perpetual contracts on event probabilities**. Traders take leveraged perpetual positions on a continuous probability (0-100%). The mark price = event probability * 1,000,000. Funding rate anchors the perp price to the oracle probability.
 
 ## How It Works
 
 1. An oracle service aggregates event probability from multiple sources (Polymarket, Kalshi, custom feeds)
 2. A keeper syncs the probability to the matcher context and Percolator's oracle authority (Hyperp mode)
 3. On each trade, the matcher computes execution price with **edge spread** that widens dramatically near 0% and 100%
-4. [Kalshify](https://github.com/nicholasgasior/kalshify)-style signal detection (volume spikes, whale alerts) dynamically widens spreads
+4. [Kalshify](https://github.com/aeyakovenko/kalshify)-style signal detection (volume spikes, whale alerts) dynamically widens spreads
 5. When the event resolves, the oracle snaps probability to 0 or 1,000,000 and all positions settle at the terminal value
 
 ## Edge Spread

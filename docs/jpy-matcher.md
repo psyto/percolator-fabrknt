@@ -1,6 +1,6 @@
 # jpy-matcher
 
-A [Percolator](https://github.com/nicholasgasior/percolator) custom matching program that **enforces KYC/jurisdiction compliance** before allowing trades. The matcher reads [Meridian](https://github.com/nicholasgasior/meridian)'s transfer hook WhitelistEntry accounts to verify both the trader and LP are KYC-verified. Uses JPY stablecoin (Token-2022) as collateral in an inverted USD/JPY market.
+A [Percolator](https://github.com/aeyakovenko/percolator) custom matching program that **enforces KYC/jurisdiction compliance** before allowing trades. The matcher reads [Meridian](https://github.com/aeyakovenko/meridian)'s transfer hook WhitelistEntry accounts to verify both the trader and LP are KYC-verified. Uses JPY stablecoin (Token-2022) as collateral in an inverted USD/JPY market.
 
 ## How It Works
 

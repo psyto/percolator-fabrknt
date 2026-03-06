@@ -1,6 +1,6 @@
 # percolator-matcher-sdk
 
-Shared Rust library for [Percolator](https://github.com/nicholasgasior/percolator) custom matching programs on Solana.
+Shared Rust library for [Percolator](https://github.com/aeyakovenko/percolator) custom matching programs on Solana.
 
 All Percolator matchers share a 320-byte context account layout and a common CPI contract. This crate (`matcher-common`) provides the constants, verification functions, and header utilities that every matcher needs.
 
