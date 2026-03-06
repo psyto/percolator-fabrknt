@@ -13,7 +13,7 @@ export async function resolveEvent(opts: {
   );
 
   const matcherProgramId = new PublicKey(
-    process.env.MATCHER_PROGRAM_ID || "Evnt1111111111111111111111111111111111111111"
+    process.env.MATCHER_PROGRAM_ID || "6d8JHEuia8cJEVFDcQqeLUFnGhCo9igzqVLam1H9cpum"
   );
 
   const outcome = opts.outcome.toLowerCase() === "yes" ? 1 : 0;

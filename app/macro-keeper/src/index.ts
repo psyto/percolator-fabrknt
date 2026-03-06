@@ -14,7 +14,7 @@ async function main() {
   );
 
   const matcherProgramId = new PublicKey(
-    process.env.MATCHER_PROGRAM_ID || "MACm1111111111111111111111111111111111111111"
+    process.env.MATCHER_PROGRAM_ID || "9E7yvQkrVj8i9RtBTkFPeDS9ZaVRodBHV9zTyL1fuKQV"
   );
   const matcherContext = new PublicKey(
     process.env.MATCHER_CONTEXT || "1111111111111111111111111111111111111111111"

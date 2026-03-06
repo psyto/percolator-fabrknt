@@ -3,11 +3,11 @@ seeds = false
 skip-lint = false
 
 [programs.devnet]
-privacy_matcher = "Priv1111111111111111111111111111111111111111"
-vol_matcher = "VoLm1111111111111111111111111111111111111111"
-jpy_matcher = "JPYm1111111111111111111111111111111111111111"
-event_matcher = "Evnt1111111111111111111111111111111111111111"
-macro_matcher = "MAcR1111111111111111111111111111111111111111"
+privacy_matcher = "B2GB1aku91TAm2eRs3AAYiC9d5Xo35TdnbdA1mtqYuTG"
+vol_matcher = "73Zhah3R7mzDUMM2rKM7A4E7WYkv3aGUGmNrCj7uEqNn"
+jpy_matcher = "FZf6Zcw6nBzeLKtw4o4o9LFXzjxRa2poAdJxmLieuHF8"
+event_matcher = "6d8JHEuia8cJEVFDcQqeLUFnGhCo9igzqVLam1H9cpum"
+macro_matcher = "9E7yvQkrVj8i9RtBTkFPeDS9ZaVRodBHV9zTyL1fuKQV"
 
 [registry]
 url = "https://api.apr.dev"

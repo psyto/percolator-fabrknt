@@ -25,7 +25,7 @@ export async function initVolLp(opts: {
   );
 
   const matcherProgramId = new PublicKey(
-    process.env.MATCHER_PROGRAM_ID || "VoLm1111111111111111111111111111111111111111"
+    process.env.MATCHER_PROGRAM_ID || "73Zhah3R7mzDUMM2rKM7A4E7WYkv3aGUGmNrCj7uEqNn"
   );
 
   const contextAccount = Keypair.generate();

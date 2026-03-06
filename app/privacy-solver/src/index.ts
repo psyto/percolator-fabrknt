@@ -10,7 +10,7 @@ async function main() {
     rpcUrl: process.env.RPC_URL || "https://api.devnet.solana.com",
     solverKeypairPath: process.env.SOLVER_KEYPAIR || "~/.config/solana/id.json",
     matcherProgramId: new PublicKey(
-      process.env.MATCHER_PROGRAM_ID || "Priv1111111111111111111111111111111111111111"
+      process.env.MATCHER_PROGRAM_ID || "B2GB1aku91TAm2eRs3AAYiC9d5Xo35TdnbdA1mtqYuTG"
     ),
     matcherContextAccount: new PublicKey(
       process.env.MATCHER_CONTEXT || "1111111111111111111111111111111111111111111"

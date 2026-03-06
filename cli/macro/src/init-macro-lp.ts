@@ -24,7 +24,7 @@ export async function initMacroLp(opts: {
   );
 
   const matcherProgramId = new PublicKey(
-    process.env.MATCHER_PROGRAM_ID || "MACm1111111111111111111111111111111111111111"
+    process.env.MATCHER_PROGRAM_ID || "9E7yvQkrVj8i9RtBTkFPeDS9ZaVRodBHV9zTyL1fuKQV"
   );
 
   const contextAccount = Keypair.generate();

@@ -21,7 +21,7 @@ export async function initJpyLp(opts: {
   );
 
   const matcherProgramId = new PublicKey(
-    process.env.MATCHER_PROGRAM_ID || "JPYm1111111111111111111111111111111111111111"
+    process.env.MATCHER_PROGRAM_ID || "FZf6Zcw6nBzeLKtw4o4o9LFXzjxRa2poAdJxmLieuHF8"
   );
 
   const contextAccount = Keypair.generate();
