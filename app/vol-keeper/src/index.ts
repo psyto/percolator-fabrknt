@@ -1,9 +1,12 @@
 import { Connection, Keypair, PublicKey } from "@solana/web3.js";
 import { VolOracleSync } from "./vol-oracle-sync";
+import { VolCrank } from "./crank";
 import * as dotenv from "dotenv";
 import * as fs from "fs";
 
 dotenv.config();
+
+const DEFAULT_PERCOLATOR_PROG = "2SSnp35m7FQ7cRLNKGdW5UzjYFF6RBUNq7d3m5mqNByp";
 
 async function main() {
   const rpcUrl = process.env.RPC_URL || "https://api.devnet.solana.com";
@@ -26,7 +29,14 @@ async function main() {
     process.env.VOL_INDEX || "1111111111111111111111111111111111111111111"
   );
 
+  const percolatorProg = new PublicKey(
+    process.env.PERCOLATOR_PROG || DEFAULT_PERCOLATOR_PROG
+  );
+  const slab = process.env.SLAB ? new PublicKey(process.env.SLAB) : null;
+  const oracle = process.env.ORACLE ? new PublicKey(process.env.ORACLE) : null;
+
   const syncIntervalMs = parseInt(process.env.SYNC_INTERVAL_MS || "5000");
+  const crankIntervalMs = parseInt(process.env.CRANK_INTERVAL_MS || "2000");
 
   const sync = new VolOracleSync(
     connection,
@@ -37,24 +47,56 @@ async function main() {
     volIndex,
   );
 
-  console.log("Vol Oracle Keeper started");
-  console.log(`  Program: ${matcherProgramId.toBase58()}`);
-  console.log(`  Context: ${matcherContext.toBase58()}`);
-  console.log(`  Sync interval: ${syncIntervalMs}ms`);
+  // Shared mutable state: latest oracle price from vol sync
+  // The crank loop reads this to push oracle price before cranking
+  let latestOraclePriceE6: bigint | null = null;
+
+  console.log("=== Vol Oracle Keeper ===\n");
+  console.log(`  Matcher Program: ${matcherProgramId.toBase58()}`);
+  console.log(`  Matcher Context: ${matcherContext.toBase58()}`);
+  console.log(`  Percolator Prog: ${percolatorProg.toBase58()}`);
+  console.log(`  Slab:            ${slab ? slab.toBase58() : "(not set)"}`);
+  console.log(`  Oracle:          ${oracle ? oracle.toBase58() : "(not set)"}`);
+  console.log(`  Sync interval:   ${syncIntervalMs}ms`);
+  console.log(`  Crank interval:  ${crankIntervalMs}ms`);
+  console.log(`  Payer:           ${payer.publicKey.toBase58()}\n`);
 
   process.on("SIGINT", () => {
-    console.log("\nShutting down keeper...");
+    console.log("\nShutting down vol keeper...");
     process.exit(0);
   });
 
-  while (true) {
-    try {
-      await sync.syncOracle();
-    } catch (err) {
-      console.error("Sync error:", err);
+  // Build concurrent task list
+  const tasks: Promise<void>[] = [];
+
+  // Task 1: Vol oracle sync loop (matcher context updates)
+  tasks.push((async () => {
+    while (true) {
+      try {
+        await sync.syncOracle();
+        // TODO: when vol-oracle-sync exposes the latest price, capture it here
+        // For now, use a default vol price: 30% annualized = 3000 bps = 3_000_000_000 e6
+        if (latestOraclePriceE6 === null) {
+          latestOraclePriceE6 = 3_000_000_000n;
+        }
+      } catch (err) {
+        console.error("Sync error:", err);
+      }
+      await new Promise((r) => setTimeout(r, syncIntervalMs));
     }
-    await new Promise((r) => setTimeout(r, syncIntervalMs));
+  })());
+
+  // Task 2: Percolator crank loop (push-oracle-price + keeper-crank)
+  if (slab && oracle) {
+    const crank = new VolCrank(connection, payer, percolatorProg, slab, oracle);
+    tasks.push(
+      crank.run(crankIntervalMs, () => latestOraclePriceE6)
+    );
+  } else {
+    console.log("SLAB/ORACLE not set — running vol oracle sync only (no percolator crank)");
   }
+
+  await Promise.all(tasks);
 }
 
 main().catch((err) => {

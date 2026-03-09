@@ -5,14 +5,22 @@ export interface SolverConfig {
   solverKeypairPath: string;
   matcherProgramId: PublicKey;
   matcherContextAccount: PublicKey;
+  percolatorProgId: PublicKey;
+  slabPubkey: PublicKey;
+  lpIdx: number;
+  userIdx: number;
+  oracleFeedPubkey: PublicKey;        // Pyth feed ID (or admin oracle) — passed to keeper-crank & trade-cpi
   percolatorCliPath: string;
   pollIntervalMs: number;
   maxSlippageBps: number;
-  intentQueueUrl: string; // WebSocket URL for off-chain intent queue
+  intentQueueUrl: string;             // WebSocket URL for off-chain intent queue
 }
+
+export const DEFAULT_PERCOLATOR_PROG = new PublicKey("2SSnp35m7FQ7cRLNKGdW5UzjYFF6RBUNq7d3m5mqNByp");
 
 export const DEFAULT_CONFIG: Partial<SolverConfig> = {
   rpcUrl: process.env.RPC_URL || "https://api.devnet.solana.com",
+  percolatorProgId: DEFAULT_PERCOLATOR_PROG,
   pollIntervalMs: 1000,
   maxSlippageBps: 500,
 };

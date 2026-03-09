@@ -5,12 +5,14 @@ import {
 import { KalshiAdapter } from "./kalshi-adapter";
 import { PolymarketAdapter } from "./polymarket-adapter";
 import { SignalDetector, SignalSeverity } from "./signal-detector";
+import { PercolatorCrank } from "./percolator-crank";
 import { withRetry } from "../../shared/retry";
 
 export class ProbabilityFeed {
   private kalshi: KalshiAdapter;
   private polymarket: PolymarketAdapter;
   private signalDetector: SignalDetector;
+  private percolatorCrank: PercolatorCrank | null = null;
 
   constructor(
     private connection: Connection,
@@ -18,10 +20,30 @@ export class ProbabilityFeed {
     private matcherProgramId: PublicKey,
     private matcherContext: PublicKey,
     private eventOracle: PublicKey,
+    opts?: {
+      percolatorProgramId?: PublicKey;
+      slab?: PublicKey;
+      oracleFeed?: PublicKey;
+    },
   ) {
     this.kalshi = new KalshiAdapter();
     this.polymarket = new PolymarketAdapter();
     this.signalDetector = new SignalDetector();
+
+    if (opts?.percolatorProgramId && opts?.slab && opts?.oracleFeed) {
+      this.percolatorCrank = new PercolatorCrank(
+        connection,
+        payer,
+        opts.percolatorProgramId,
+        opts.slab,
+        opts.oracleFeed,
+      );
+    }
+  }
+
+  /** Access the percolator crank instance (for running the crank loop externally). */
+  getPercolatorCrank(): PercolatorCrank | null {
+    return this.percolatorCrank;
   }
 
   /**
@@ -50,8 +72,18 @@ export class ProbabilityFeed {
     // Compute signal-adjusted spread
     const signalSpread = this.computeSignalSpread(signal.severity);
 
-    // Write to chain
+    // Write to chain (matcher context)
     await this.writeProbabilitySync(probability, signal.severity, signalSpread);
+
+    // Push oracle price to percolator-prog (probability as mark price in e6)
+    if (this.percolatorCrank) {
+      try {
+        const sig = await this.percolatorCrank.pushOraclePrice(probability);
+        console.log(`  oracle price pushed: ${sig.slice(0, 16)}...`);
+      } catch (err: any) {
+        console.error(`  oracle price push failed: ${(err.message || String(err)).slice(0, 120)}`);
+      }
+    }
 
     console.log(
       `Probability updated: ${(probability / 10_000).toFixed(2)}% | ` +
