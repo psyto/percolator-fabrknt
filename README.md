@@ -18,6 +18,8 @@ This repo contains **Fabrknt's custom matchers** — five specialized pricing st
 
 Each matcher also has companion off-chain services (keepers, solvers, oracles) and CLI tools.
 
+All matchers include a **circuit breaker** safety mechanism that rejects trades when the execution price deviates too far from the core oracle price, protecting LPs against compromised keepers or arithmetic bugs.
+
 ## How it fits together
 
 ```
@@ -197,6 +199,22 @@ percolator-fabrknt/
   tests/                  Integration tests
   docs/                   Per-matcher documentation
 ```
+
+## Safety: Circuit Breaker
+
+Every matcher includes a configurable circuit breaker that compares the computed `exec_price` against `oracle_price_e6` from the core `MatcherCall`. If the deviation exceeds the threshold, the trade is safely rejected (via `MatcherReturn::rejected()`, never an error).
+
+| Matcher | Default Threshold | Rationale |
+|---------|------------------|-----------|
+| privacy-matcher | 500 bps (5%) | Same underlying as core oracle |
+| jpy-matcher | 500 bps (5%) | Same underlying as core oracle |
+| vol-matcher | 5000 bps (50%) | Different instrument (volatility index) |
+| event-matcher | 5000 bps (50%) | Different instrument (probability) |
+| macro-matcher | 5000 bps (50%) | Different instrument (real rate index) |
+
+The threshold is stored per-context account (set during `Init`). A value of 0 disables the check.
+
+See [`sdk/README.md`](sdk/README.md) for the `check_circuit_breaker()` API.
 
 ## Related repositories
 

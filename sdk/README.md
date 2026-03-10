@@ -111,13 +111,18 @@ ret.write_to(&mut ctx_data)?;
 ### Constants
 
 ```rust
-use matcher_common::{CTX_SIZE, RETURN_DATA_OFFSET, RETURN_DATA_SIZE, MAGIC_OFFSET, LP_PDA_OFFSET};
+use matcher_common::{
+    CTX_SIZE, RETURN_DATA_OFFSET, RETURN_DATA_SIZE, MAGIC_OFFSET, LP_PDA_OFFSET,
+    DEFAULT_CIRCUIT_BREAKER_BPS, WIDE_CIRCUIT_BREAKER_BPS,
+};
 
-CTX_SIZE: usize = 320            // Standard context account size
-RETURN_DATA_OFFSET: usize = 0    // Start of return data region
-RETURN_DATA_SIZE: usize = 64     // Size of return data region
-MAGIC_OFFSET: usize = 64         // Where magic bytes are stored
-LP_PDA_OFFSET: usize = 80        // Where LP PDA is stored
+CTX_SIZE: usize = 320                    // Standard context account size
+RETURN_DATA_OFFSET: usize = 0            // Start of return data region
+RETURN_DATA_SIZE: usize = 64             // Size of return data region
+MAGIC_OFFSET: usize = 64                 // Where magic bytes are stored
+LP_PDA_OFFSET: usize = 80               // Where LP PDA is stored
+DEFAULT_CIRCUIT_BREAKER_BPS: u32 = 500   // 5% threshold (same-underlying)
+WIDE_CIRCUIT_BREAKER_BPS: u32 = 5000     // 50% threshold (different instrument)
 ```
 
 ### Reading Context Data
@@ -176,10 +181,40 @@ use matcher_common::compute_exec_price;
 let price = compute_exec_price(100_000_000, 50)?; // -> 100_500_000
 ```
 
+### Circuit Breaker
+
+Rejects trades when execution price deviates too far from a reference price, protecting LPs against compromised keepers or arithmetic bugs.
+
+```rust
+use matcher_common::{check_circuit_breaker, DEFAULT_CIRCUIT_BREAKER_BPS, WIDE_CIRCUIT_BREAKER_BPS};
+
+// Returns true if price is within bounds, false if tripped
+let ok = check_circuit_breaker(exec_price, call.oracle_price_e6, 500);
+
+// Constants:
+// DEFAULT_CIRCUIT_BREAKER_BPS = 500   (5%, for same-underlying matchers)
+// WIDE_CIRCUIT_BREAKER_BPS   = 5000  (50%, for different-instrument matchers)
+
+// Disable check with max_deviation_bps = 0
+let always_ok = check_circuit_breaker(any_price, any_ref, 0); // -> true
+```
+
+Typical usage in a matcher's `process_match`:
+
+```rust
+let cb_bps = read_circuit_breaker_bps(&ctx_data);
+if !check_circuit_breaker(exec_price, call.oracle_price_e6, cb_bps) {
+    msg!("Circuit breaker tripped");
+    let ret = MatcherReturn::rejected(&call);
+    ret.write_to(&mut ctx_data)?;
+    return Ok(());
+}
+```
+
 ## Writing a Custom Matcher
 
 ```rust
-use matcher_common::*;
+use matcher_common::*;  // includes check_circuit_breaker, DEFAULT_CIRCUIT_BREAKER_BPS
 use solana_program::{
     account_info::{next_account_info, AccountInfo},
     entrypoint::ProgramResult,
@@ -218,9 +253,20 @@ pub fn process_match(
 
     // 3. Compute execution price
     let spread_bps = 50u64;
+    let ctx_data = ctx_account.try_borrow_data()?;
     let exec_price = compute_exec_price(call.oracle_price_e6, spread_bps)?;
 
-    // 4. Write full MatcherReturn to context account
+    // 4. Circuit breaker check
+    if !check_circuit_breaker(exec_price, call.oracle_price_e6, DEFAULT_CIRCUIT_BREAKER_BPS) {
+        let ret = MatcherReturn::rejected(&call);
+        drop(ctx_data);
+        let mut ctx_data = ctx_account.try_borrow_mut_data()?;
+        ret.write_to(&mut ctx_data)?;
+        return Ok(());
+    }
+    drop(ctx_data);
+
+    // 5. Write full MatcherReturn to context account
     let mut ctx_data = ctx_account.try_borrow_mut_data()?;
     let ret = MatcherReturn::filled(exec_price, call.req_size, &call);
     ret.write_to(&mut ctx_data)?;

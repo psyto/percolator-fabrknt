@@ -13,6 +13,7 @@ The funding rate on this market becomes a real-time, incentive-aligned signal of
 2. Real rate = nominal - inflation. The mark price is shifted by +5.00% to stay positive: `mark = (real_rate_bps + 500) * 10_000`
 3. The keeper syncs the real rate index to the matcher context and pushes it to Percolator's oracle authority (Hyperp mode)
 4. When a trade executes, Percolator CPI's into macro-matcher which applies a **regime-adaptive spread** based on the current macroeconomic regime
+5. A **circuit breaker** rejects trades if execution price deviates more than `circuit_breaker_bps` (default 50%) from the core oracle price, catching catastrophic keeper failures
 
 Mark price examples: +2% real rate → 7,000,000 | 0% → 5,000,000 | -1% → 4,000,000 | -5% → 0 (floor).
 
@@ -53,7 +54,8 @@ Execution price = `mark * (1 + min(base_spread + regime_spread * regime_mult / 1
 | 208 | 32 | macro_oracle | Authorized oracle pubkey |
 | 240 | 16 | total_volume_e6 | Lifetime matched volume |
 | 256 | 8 | total_trades | Lifetime trade count |
-| 264 | 56 | _reserved | Future (Sovereign tier, housing data) |
+| 264 | 4 | circuit_breaker_bps | Max deviation from core oracle (default 5000 = 50%) |
+| 268 | 52 | _reserved | Future (Sovereign tier, housing data) |
 
 ## Instructions
 

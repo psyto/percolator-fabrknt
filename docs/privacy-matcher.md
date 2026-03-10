@@ -9,7 +9,7 @@ A [Percolator](https://github.com/aeyakovenko/percolator) custom matching progra
 3. Solver updates the matcher's cached oracle price and submits the trade through Percolator's `trade-cpi`
 4. The on-chain matcher verifies the LP PDA signature, applies spread, and writes the execution price to the return buffer
 
-The solver is the only entity that sees decrypted orders. Extraction is bounded by `max_spread_bps`.
+The solver is the only entity that sees decrypted orders. Extraction is bounded by `max_spread_bps`. A **circuit breaker** rejects trades if the execution price deviates more than `circuit_breaker_bps` (default 5%) from the core oracle price, protecting against compromised solvers.
 
 ## Architecture
 
@@ -44,7 +44,8 @@ User                     Solver                   Percolator
 | 172 | 16 | total_volume_e6 | Lifetime volume |
 | 188 | 8 | total_orders | Lifetime order count |
 | 196 | 32 | solver_encryption_pubkey | Solver's X25519 public key |
-| 228 | 92 | _reserved | Future use |
+| 228 | 4 | circuit_breaker_bps | Max deviation from core oracle (default 500 = 5%) |
+| 232 | 88 | _reserved | Future use |
 
 ## Instructions
 

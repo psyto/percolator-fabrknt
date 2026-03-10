@@ -13,6 +13,7 @@ A [Percolator](https://github.com/aeyakovenko/percolator) custom matching progra
    - Daily volume cap with automatic day-boundary reset
 3. If compliant, the matcher computes execution price with an institutional KYC discount
 4. Non-compliant trades are rejected on-chain at the matcher level
+5. A **circuit breaker** rejects trades if execution price deviates more than `circuit_breaker_bps` (default 5%) from the core oracle price
 
 ## Compliance Pipeline
 
@@ -67,7 +68,8 @@ Return execution price
 | 196 | 4 | impact_k_bps | Impact multiplier |
 | 200 | 16 | liquidity_notional_e6 | Quoting depth |
 | 216 | 16 | max_fill_abs | Max fill per trade |
-| 232 | 88 | _reserved | Future use |
+| 232 | 4 | circuit_breaker_bps | Max deviation from core oracle (default 500 = 5%) |
+| 236 | 84 | _reserved | Future use |
 
 ## KYC Levels
 

@@ -25,6 +25,8 @@ The spread dynamically adjusts based on Sigma's VolatilityRegime:
 
 Execution price = `vol_mark * (1 + min(base_spread + vov_spread * regime_mult / 100, max_spread) / 10000)`
 
+A **circuit breaker** rejects trades if the execution price deviates more than `circuit_breaker_bps` (default 50%) from the core oracle price, catching catastrophic keeper failures.
+
 ## Context Account Layout (320 bytes)
 
 | Offset | Size | Field | Description |
@@ -48,7 +50,8 @@ Execution price = `vol_mark * (1 + min(base_spread + vov_spread * regime_mult / 
 | 192 | 16 | max_fill_abs | Max fill per trade |
 | 208 | 32 | variance_tracker | Sigma VarianceTracker pubkey |
 | 240 | 32 | vol_index | Sigma VolatilityIndex pubkey |
-| 272 | 48 | _reserved | Future use |
+| 272 | 4 | circuit_breaker_bps | Max deviation from core oracle (default 5000 = 50%) |
+| 276 | 44 | _reserved | Future use |
 
 ## Instructions
 

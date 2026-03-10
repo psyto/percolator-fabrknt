@@ -8,7 +8,8 @@ A [Percolator](https://github.com/aeyakovenko/percolator) custom matching progra
 2. A keeper syncs the probability to the matcher context and Percolator's oracle authority (Hyperp mode)
 3. On each trade, the matcher computes execution price with **edge spread** that widens dramatically near 0% and 100%
 4. [Kalshify](https://github.com/aeyakovenko/kalshify)-style signal detection (volume spikes, whale alerts) dynamically widens spreads
-5. When the event resolves, the oracle snaps probability to 0 or 1,000,000 and all positions settle at the terminal value
+5. A **circuit breaker** rejects trades if execution price deviates more than `circuit_breaker_bps` (default 50%) from the core oracle price
+6. When the event resolves, the oracle snaps probability to 0 or 1,000,000 and all positions settle at the terminal value
 
 ## Edge Spread
 
@@ -59,7 +60,8 @@ Unusual activity on source markets triggers spread widening:
 | 184 | 16 | liquidity_notional_e6 | Quoting depth |
 | 200 | 16 | max_fill_abs | Max fill per trade |
 | 216 | 32 | event_oracle | Oracle account for probability |
-| 248 | 72 | _reserved | Future use |
+| 248 | 4 | circuit_breaker_bps | Max deviation from core oracle (default 5000 = 50%) |
+| 252 | 68 | _reserved | Future use |
 
 ## Instructions
 
