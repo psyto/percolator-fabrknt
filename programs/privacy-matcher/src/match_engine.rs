@@ -7,7 +7,8 @@ use crate::errors::PrivacyMatcherError;
 use crate::state::*;
 use matcher_common::{
     verify_lp_pda as verify_lp_pda_common, verify_init_preconditions, write_header,
-    compute_exec_price, MatcherCall, MatcherReturn,
+    compute_exec_price, check_circuit_breaker, MatcherCall, MatcherReturn,
+    DEFAULT_CIRCUIT_BREAKER_BPS,
 };
 
 /// Tag 0x02: Initialize privacy matcher context
@@ -92,8 +93,12 @@ pub fn process_init(
     ctx_data[SOLVER_ENCRYPTION_KEY_OFFSET..SOLVER_ENCRYPTION_KEY_OFFSET + 32]
         .copy_from_slice(&data[13..45]);
 
+    // Circuit breaker: default 500 bps (5%) for same-underlying matcher
+    ctx_data[CIRCUIT_BREAKER_BPS_OFFSET..CIRCUIT_BREAKER_BPS_OFFSET + 4]
+        .copy_from_slice(&DEFAULT_CIRCUIT_BREAKER_BPS.to_le_bytes());
+
     // Zero reserved area
-    ctx_data[228..CTX_SIZE].fill(0);
+    ctx_data[232..CTX_SIZE].fill(0);
 
     msg!(
         "INIT: lp_pda={} solver={} base_spread={} max_spread={} solver_fee={}",
@@ -171,6 +176,26 @@ pub fn process_match(
     );
 
     let exec_price = compute_exec_price(oracle_price, total_spread as u64)?;
+
+    // Circuit breaker: reject if exec_price deviates too far from core oracle
+    let cb_bps = u32::from_le_bytes(
+        ctx_data[CIRCUIT_BREAKER_BPS_OFFSET..CIRCUIT_BREAKER_BPS_OFFSET + 4]
+            .try_into()
+            .map_err(|_| ProgramError::InvalidAccountData)?,
+    );
+    if !check_circuit_breaker(exec_price, call.oracle_price_e6, cb_bps) {
+        msg!(
+            "PRIVACY-MATCHER: Circuit breaker tripped — exec={} oracle={} max_dev={}bps",
+            exec_price,
+            call.oracle_price_e6,
+            cb_bps
+        );
+        let ret = MatcherReturn::rejected(&call);
+        drop(ctx_data);
+        let mut ctx_data = ctx_account.try_borrow_mut_data()?;
+        ret.write_to(&mut ctx_data)?;
+        return Ok(());
+    }
 
     // Drop read borrow before mutable borrow
     drop(ctx_data);

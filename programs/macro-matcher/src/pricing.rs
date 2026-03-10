@@ -5,7 +5,7 @@ use solana_program::{
 
 use matcher_common::{
     compute_exec_price, verify_init_preconditions, verify_lp_pda as verify_lp_pda_common,
-    write_header, MatcherCall, MatcherReturn,
+    write_header, check_circuit_breaker, MatcherCall, MatcherReturn, WIDE_CIRCUIT_BREAKER_BPS,
 };
 
 use crate::errors::MacroMatcherError;
@@ -83,8 +83,12 @@ pub fn process_init(
     ctx_data[TOTAL_TRADES_OFFSET..TOTAL_TRADES_OFFSET + 8]
         .copy_from_slice(&0u64.to_le_bytes());
 
+    // Circuit breaker: default 5000 bps (50%) for different-instrument matcher
+    ctx_data[CIRCUIT_BREAKER_BPS_OFFSET..CIRCUIT_BREAKER_BPS_OFFSET + 4]
+        .copy_from_slice(&WIDE_CIRCUIT_BREAKER_BPS.to_le_bytes());
+
     // Zero reserved
-    ctx_data[264..CTX_SIZE].fill(0);
+    ctx_data[268..CTX_SIZE].fill(0);
 
     let base_spread_val = u32::from_le_bytes(data[2..6].try_into().map_err(|_| ProgramError::InvalidInstructionData)?);
     let regime_spread_val = u32::from_le_bytes(data[6..10].try_into().map_err(|_| ProgramError::InvalidInstructionData)?);
@@ -200,6 +204,26 @@ pub fn process_match(
 
     // Compute execution price using shared utility
     let exec_price = compute_exec_price(mark_price, total_spread)?;
+
+    // Circuit breaker: reject if exec_price deviates too far from core oracle
+    let cb_bps = u32::from_le_bytes(
+        ctx_data[CIRCUIT_BREAKER_BPS_OFFSET..CIRCUIT_BREAKER_BPS_OFFSET + 4]
+            .try_into()
+            .map_err(|_| ProgramError::InvalidAccountData)?,
+    );
+    if !check_circuit_breaker(exec_price, call.oracle_price_e6, cb_bps) {
+        msg!(
+            "MACRO-MATCHER: Circuit breaker tripped — exec={} oracle={} max_dev={}bps",
+            exec_price,
+            call.oracle_price_e6,
+            cb_bps
+        );
+        let ret = MatcherReturn::rejected(&call);
+        drop(ctx_data);
+        let mut ctx_data = ctx_account.try_borrow_mut_data()?;
+        ret.write_to(&mut ctx_data)?;
+        return Ok(());
+    }
 
     drop(ctx_data);
 

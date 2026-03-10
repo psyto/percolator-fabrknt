@@ -3,7 +3,7 @@ use solana_program::{
     program_error::ProgramError, pubkey::Pubkey,
 };
 
-use matcher_common::{verify_init_preconditions, write_header};
+use matcher_common::{verify_init_preconditions, write_header, DEFAULT_CIRCUIT_BREAKER_BPS};
 use crate::errors::JpyMatcherError;
 use crate::state::*;
 
@@ -85,8 +85,12 @@ pub fn process_init(
     ctx_data[LIQUIDITY_OFFSET..LIQUIDITY_OFFSET + 16].copy_from_slice(&data[61..77]);
     ctx_data[MAX_FILL_OFFSET..MAX_FILL_OFFSET + 16].copy_from_slice(&data[77..93]);
 
+    // Circuit breaker: default 500 bps (5%) for same-underlying matcher
+    ctx_data[CIRCUIT_BREAKER_BPS_OFFSET..CIRCUIT_BREAKER_BPS_OFFSET + 4]
+        .copy_from_slice(&DEFAULT_CIRCUIT_BREAKER_BPS.to_le_bytes());
+
     // Zero reserved
-    ctx_data[232..CTX_SIZE].fill(0);
+    ctx_data[236..CTX_SIZE].fill(0);
 
     let base_spread = u32::from_le_bytes(data[36..40].try_into().map_err(|_| ProgramError::InvalidInstructionData)?);
     let kyc_discount = u32::from_le_bytes(data[40..44].try_into().map_err(|_| ProgramError::InvalidInstructionData)?);

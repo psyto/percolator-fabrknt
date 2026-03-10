@@ -21,7 +21,8 @@ pub const LAST_EXEC_PRICE_OFFSET: usize = 164; // u64
 pub const TOTAL_VOLUME_OFFSET: usize = 172;    // u128 (16 bytes)
 pub const TOTAL_ORDERS_OFFSET: usize = 188;    // u64
 pub const SOLVER_ENCRYPTION_KEY_OFFSET: usize = 196; // [u8;32]
-// 228..320 = reserved
+pub const CIRCUIT_BREAKER_BPS_OFFSET: usize = 228;   // u32: max deviation from core oracle
+// 232..320 = reserved
 
 /// Verify magic bytes in context account data
 pub fn verify_magic(ctx_data: &[u8]) -> bool {

@@ -22,7 +22,8 @@ pub const DAY_RESET_TIMESTAMP_OFFSET: usize = 188; // i64
 pub const IMPACT_K_OFFSET: usize = 196;           // u32
 pub const LIQUIDITY_OFFSET: usize = 200;          // u128 (16 bytes)
 pub const MAX_FILL_OFFSET: usize = 216;           // u128 (16 bytes)
-// 232..320 = reserved
+pub const CIRCUIT_BREAKER_BPS_OFFSET: usize = 232; // u32: max deviation from core oracle
+// 236..320 = reserved
 
 /// Meridian WhitelistEntry offsets (from transfer-hook state)
 pub const WHITELIST_KYC_LEVEL_OFFSET: usize = 40;

@@ -282,6 +282,28 @@ pub fn write_exec_price(ctx_data: &mut [u8], price: u64) {
     ctx_data[0..8].copy_from_slice(&price.to_le_bytes());
 }
 
+/// Default circuit breaker threshold for same-underlying matchers (500 bps = 5%).
+pub const DEFAULT_CIRCUIT_BREAKER_BPS: u32 = 500;
+
+/// Wider circuit breaker for matchers pricing different instruments (5000 bps = 50%).
+pub const WIDE_CIRCUIT_BREAKER_BPS: u32 = 5000;
+
+/// Check if exec_price deviates too much from a reference price.
+/// Returns `true` if the price passes (is within bounds), `false` if tripped.
+/// A `max_deviation_bps` of 0 disables the check (always passes).
+pub fn check_circuit_breaker(exec_price: u64, reference_price: u64, max_deviation_bps: u32) -> bool {
+    if max_deviation_bps == 0 || reference_price == 0 {
+        return true;
+    }
+    let diff = if exec_price > reference_price {
+        exec_price - reference_price
+    } else {
+        reference_price - exec_price
+    };
+    let deviation_bps = (diff as u128) * 10_000u128 / (reference_price as u128);
+    deviation_bps <= max_deviation_bps as u128
+}
+
 /// Compute execution price given an oracle/mark price and spread in bps.
 /// Returns `price * (10000 + spread_bps) / 10000` using checked arithmetic.
 pub fn compute_exec_price(price: u64, spread_bps: u64) -> Result<u64, ProgramError> {
@@ -310,6 +332,59 @@ mod tests {
     fn test_verify_magic_short_buffer() {
         let data = vec![0u8; 100];
         assert!(!verify_magic(&data, 0x1234));
+    }
+
+    // ===================================================================
+    // Circuit Breaker Tests
+    // ===================================================================
+
+    #[test]
+    fn test_circuit_breaker_within_bounds() {
+        // 1% deviation on a $100 price
+        assert!(check_circuit_breaker(101_000_000, 100_000_000, 500));
+    }
+
+    #[test]
+    fn test_circuit_breaker_at_boundary() {
+        // Exactly 5% deviation
+        assert!(check_circuit_breaker(105_000_000, 100_000_000, 500));
+    }
+
+    #[test]
+    fn test_circuit_breaker_exceeds_threshold() {
+        // 6% deviation with 5% threshold
+        assert!(!check_circuit_breaker(106_000_000, 100_000_000, 500));
+    }
+
+    #[test]
+    fn test_circuit_breaker_below_reference() {
+        // exec_price below reference (negative deviation)
+        assert!(check_circuit_breaker(96_000_000, 100_000_000, 500));
+        assert!(!check_circuit_breaker(94_000_000, 100_000_000, 500));
+    }
+
+    #[test]
+    fn test_circuit_breaker_disabled() {
+        // max_deviation_bps = 0 disables the check
+        assert!(check_circuit_breaker(999_999_999, 100_000_000, 0));
+    }
+
+    #[test]
+    fn test_circuit_breaker_zero_reference() {
+        // Zero reference price always passes (can't compute deviation)
+        assert!(check_circuit_breaker(100_000_000, 0, 500));
+    }
+
+    #[test]
+    fn test_circuit_breaker_equal_prices() {
+        assert!(check_circuit_breaker(100_000_000, 100_000_000, 1));
+    }
+
+    #[test]
+    fn test_circuit_breaker_wide_threshold() {
+        // 50% threshold for different-instrument matchers
+        assert!(check_circuit_breaker(140_000_000, 100_000_000, 5000));
+        assert!(!check_circuit_breaker(160_000_000, 100_000_000, 5000));
     }
 
     #[test]

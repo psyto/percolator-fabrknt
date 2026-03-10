@@ -26,7 +26,8 @@ pub const SIGNAL_ADJUSTED_SPREAD_OFFSET: usize = 176; // u64
 pub const LIQUIDITY_OFFSET: usize = 184;            // u128 (16 bytes)
 pub const MAX_FILL_OFFSET: usize = 200;             // u128 (16 bytes)
 pub const EVENT_ORACLE_OFFSET: usize = 216;         // Pubkey (32)
-// 248..320 = reserved
+pub const CIRCUIT_BREAKER_BPS_OFFSET: usize = 248;  // u32: max deviation from core oracle
+// 252..320 = reserved
 
 /// Maximum probability value (100% = 1_000_000)
 pub const MAX_PROBABILITY: u64 = 1_000_000;

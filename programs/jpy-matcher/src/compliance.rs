@@ -3,7 +3,7 @@ use solana_program::{
     program_error::ProgramError, pubkey::Pubkey, sysvar::Sysvar,
 };
 
-use matcher_common::{verify_lp_pda as verify_lp_pda_common, compute_exec_price, MatcherCall, MatcherReturn};
+use matcher_common::{verify_lp_pda as verify_lp_pda_common, compute_exec_price, check_circuit_breaker, MatcherCall, MatcherReturn};
 use crate::state::*;
 
 /// Tag 0x00: Match with compliance verification (CPI from percolator-prog)
@@ -199,6 +199,26 @@ pub fn process_match_with_compliance(
     let capped_spread = std::cmp::min(effective_spread, max_spread);
 
     let exec_price = compute_exec_price(oracle_price, capped_spread as u64)?;
+
+    // Circuit breaker: reject if exec_price deviates too far from core oracle
+    let cb_bps = u32::from_le_bytes(
+        ctx_data[CIRCUIT_BREAKER_BPS_OFFSET..CIRCUIT_BREAKER_BPS_OFFSET + 4]
+            .try_into()
+            .map_err(|_| ProgramError::InvalidAccountData)?,
+    );
+    if !check_circuit_breaker(exec_price, call.oracle_price_e6, cb_bps) {
+        msg!(
+            "JPY-MATCHER: Circuit breaker tripped — exec={} oracle={} max_dev={}bps",
+            exec_price,
+            call.oracle_price_e6,
+            cb_bps
+        );
+        let ret = MatcherReturn::rejected(&call);
+        drop(ctx_data);
+        let mut ctx_data = ctx_account.try_borrow_mut_data()?;
+        ret.write_to(&mut ctx_data)?;
+        return Ok(());
+    }
 
     drop(ctx_data);
 

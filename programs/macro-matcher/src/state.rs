@@ -26,7 +26,8 @@ pub const MAX_FILL_OFFSET: usize = 192;                   // u128 (16 bytes)
 pub const MACRO_ORACLE_OFFSET: usize = 208;               // Pubkey (32 bytes)
 pub const TOTAL_VOLUME_OFFSET: usize = 240;               // u128 (16 bytes)
 pub const TOTAL_TRADES_OFFSET: usize = 256;               // u64
-// 264..320 = reserved
+pub const CIRCUIT_BREAKER_BPS_OFFSET: usize = 264;        // u32: max deviation from core oracle
+// 268..320 = reserved
 
 /// Rate offset: +500 bps (+5.00%) to keep mark price positive
 #[allow(dead_code)]

@@ -3,7 +3,7 @@ use solana_program::{
     program_error::ProgramError, pubkey::Pubkey, sysvar::Sysvar,
 };
 
-use matcher_common::{verify_lp_pda as verify_lp_pda_common, verify_init_preconditions, write_header, MatcherCall, MatcherReturn};
+use matcher_common::{verify_lp_pda as verify_lp_pda_common, verify_init_preconditions, write_header, check_circuit_breaker, MatcherCall, MatcherReturn, WIDE_CIRCUIT_BREAKER_BPS};
 
 use crate::errors::EventMatcherError;
 use crate::state::*;
@@ -87,8 +87,12 @@ pub fn process_init(
     // Event oracle
     ctx_data[EVENT_ORACLE_OFFSET..EVENT_ORACLE_OFFSET + 32].copy_from_slice(&data[66..98]);
 
+    // Circuit breaker: default 5000 bps (50%) for different-instrument matcher
+    ctx_data[CIRCUIT_BREAKER_BPS_OFFSET..CIRCUIT_BREAKER_BPS_OFFSET + 4]
+        .copy_from_slice(&WIDE_CIRCUIT_BREAKER_BPS.to_le_bytes());
+
     // Zero reserved
-    ctx_data[248..CTX_SIZE].fill(0);
+    ctx_data[252..CTX_SIZE].fill(0);
 
     msg!(
         "INIT: lp_pda={} mode={} probability={} resolution_ts={}",
@@ -210,6 +214,26 @@ pub fn process_match(
         .checked_mul(spread_mult as u128)
         .ok_or(EventMatcherError::ArithmeticOverflow)?
         / 10_000u128) as u64;
+
+    // Circuit breaker: reject if exec_price deviates too far from core oracle
+    let cb_bps = u32::from_le_bytes(
+        ctx_data[CIRCUIT_BREAKER_BPS_OFFSET..CIRCUIT_BREAKER_BPS_OFFSET + 4]
+            .try_into()
+            .map_err(|_| ProgramError::InvalidAccountData)?,
+    );
+    if !check_circuit_breaker(exec_price, call.oracle_price_e6, cb_bps) {
+        msg!(
+            "EVENT-MATCHER: Circuit breaker tripped — exec={} oracle={} max_dev={}bps",
+            exec_price,
+            call.oracle_price_e6,
+            cb_bps
+        );
+        let ret = MatcherReturn::rejected(&call);
+        drop(ctx_data);
+        let mut ctx_data = ctx_account.try_borrow_mut_data()?;
+        ret.write_to(&mut ctx_data)?;
+        return Ok(());
+    }
 
     drop(ctx_data);
 

@@ -23,7 +23,8 @@ pub const LIQUIDITY_OFFSET: usize = 176;         // u128 (16 bytes)
 pub const MAX_FILL_OFFSET: usize = 192;          // u128 (16 bytes)
 pub const VARIANCE_TRACKER_OFFSET: usize = 208;  // Pubkey (32)
 pub const VOL_INDEX_OFFSET: usize = 240;         // Pubkey (32)
-// 272..320 = reserved
+pub const CIRCUIT_BREAKER_BPS_OFFSET: usize = 272; // u32: max deviation from core oracle
+// 276..320 = reserved
 
 /// Volatility regime enum
 #[derive(Debug, Clone, Copy, PartialEq)]

@@ -3,7 +3,7 @@ use solana_program::{
     program_error::ProgramError, pubkey::Pubkey, sysvar::Sysvar,
 };
 
-use matcher_common::{verify_lp_pda as verify_lp_pda_common, verify_init_preconditions, write_header, compute_exec_price, MatcherCall, MatcherReturn};
+use matcher_common::{verify_lp_pda as verify_lp_pda_common, verify_init_preconditions, write_header, compute_exec_price, check_circuit_breaker, MatcherCall, MatcherReturn, WIDE_CIRCUIT_BREAKER_BPS};
 
 use crate::errors::VolMatcherError;
 use crate::state::*;
@@ -69,8 +69,12 @@ pub fn process_init(
     ctx_data[VARIANCE_TRACKER_OFFSET..VARIANCE_TRACKER_OFFSET + 32].copy_from_slice(&data[50..82]);
     ctx_data[VOL_INDEX_OFFSET..VOL_INDEX_OFFSET + 32].copy_from_slice(&data[82..114]);
 
+    // Circuit breaker: default 5000 bps (50%) for different-instrument matcher
+    ctx_data[CIRCUIT_BREAKER_BPS_OFFSET..CIRCUIT_BREAKER_BPS_OFFSET + 4]
+        .copy_from_slice(&WIDE_CIRCUIT_BREAKER_BPS.to_le_bytes());
+
     // Zero reserved
-    ctx_data[272..CTX_SIZE].fill(0);
+    ctx_data[276..CTX_SIZE].fill(0);
 
     msg!(
         "INIT: lp_pda={} mode={} base_spread={} vov_spread={} max_spread={}",
@@ -161,6 +165,26 @@ pub fn process_match(
 
     // Compute execution price using shared utility
     let exec_price = compute_exec_price(vol_mark, total_spread)?;
+
+    // Circuit breaker: reject if exec_price deviates too far from core oracle
+    let cb_bps = u32::from_le_bytes(
+        ctx_data[CIRCUIT_BREAKER_BPS_OFFSET..CIRCUIT_BREAKER_BPS_OFFSET + 4]
+            .try_into()
+            .map_err(|_| ProgramError::InvalidAccountData)?,
+    );
+    if !check_circuit_breaker(exec_price, call.oracle_price_e6, cb_bps) {
+        msg!(
+            "VOL-MATCHER: Circuit breaker tripped — exec={} oracle={} max_dev={}bps",
+            exec_price,
+            call.oracle_price_e6,
+            cb_bps
+        );
+        let ret = MatcherReturn::rejected(&call);
+        drop(ctx_data);
+        let mut ctx_data = ctx_account.try_borrow_mut_data()?;
+        ret.write_to(&mut ctx_data)?;
+        return Ok(());
+    }
 
     drop(ctx_data);
 
